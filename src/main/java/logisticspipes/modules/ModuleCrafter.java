@@ -299,6 +299,12 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             }
             lostItem = _lostItems.poll();
         }
+        // The loop polls before re-testing its condition, so exiting on the rerequested cap
+        // leaves an already-polled item in hand that was never processed. Put it back.
+        if (lostItem != null) {
+            Pair<ItemIdentifierStack, IAdditionalTargetInformation> pair = lostItem.get();
+            _lostItems.add(new DelayedGeneric<>(pair, 9000 + (int) (Math.random() * 2000)));
+        }
     }
 
     @Override
