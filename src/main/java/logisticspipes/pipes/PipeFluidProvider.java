@@ -221,18 +221,17 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
     }
 
     @Override
-    public void canProvide(RequestTreeNode tree, RequestTree root, List<IFilter> filter) {
+    public void canProvide(RequestTreeNode tree, RequestTree root, List<IFilter> filters) {
         if (tree.isDone()) {
             return;
         }
         if (!(tree.getRequestType() instanceof FluidResource)) {
             return;
         }
-        // FIXME this is a bandaid fix to fluid provider pipe being able to provide fluid across firewall bug
-        // a more long term solution would be to actually allow fluid to cross firewall boundary and have
-        // proper filtering, but for now this will make do
-        if (filter.stream().anyMatch(IFilter::blockProvider)) {
-            return;
+        for (IFilter filter : filters) {
+            if (filter.isBlocked() == filter.isFilteredItem(tree.getRequestType()) || filter.blockProvider()) {
+                return;
+            }
         }
         FluidIdentifier fluid = ((FluidResource) tree.getRequestType()).getFluid();
         int containedAmount = 0;

@@ -14,9 +14,11 @@ import logisticspipes.network.PacketHandler;
 import logisticspipes.network.packets.pipe.FireWallFlag;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.proxy.MainProxy;
+import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.textures.Textures;
 import logisticspipes.textures.Textures.TextureType;
+import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -142,6 +144,9 @@ public class PipeItemsFirewall extends CoreRoutedPipe {
 
                 @Override
                 public boolean isFilteredItem(IResource resultItem) {
+                    if (resultItem instanceof FluidResource) {
+                        return isFilteredFluid((FluidResource) resultItem);
+                    }
                     for (Pair<ItemIdentifierStack, Integer> pair : inv) {
                         ItemIdentifierStack stack = pair.getValue1();
                         if (stack != null && resultItem.matches(stack.getItem(), IResource.MatchSettings.NORMAL)) {
@@ -150,9 +155,30 @@ public class PipeItemsFirewall extends CoreRoutedPipe {
                     }
                     return false;
                 }
+
+                @Override
+                public boolean isFilteredFluid(FluidResource fluidResource) {
+                    return PipeItemsFirewall.this.filterInvContainsFluid(fluidResource.getFluid());
+                }
             };
         }
         return filter;
+    }
+
+    private boolean filterInvContainsFluid(FluidIdentifier fluid) {
+        if (fluid == null) {
+            return false;
+        }
+        for (Pair<ItemIdentifierStack, Integer> pair : inv) {
+            ItemIdentifierStack stack = pair.getValue1();
+            if (stack == null) {
+                continue;
+            }
+            if (FluidIdentifier.get(stack) == fluid) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isBlockProvider() {

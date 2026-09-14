@@ -1,5 +1,6 @@
 package logisticspipes.interfaces.routing;
 
+import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.tuples.LPPosition;
@@ -7,6 +8,8 @@ import logisticspipes.utils.tuples.LPPosition;
 public interface IFilter {
 
     boolean isBlocked();
+
+    boolean isFilteredFluid(FluidResource fluid);
 
     boolean isFilteredItem(ItemIdentifier item);
 
