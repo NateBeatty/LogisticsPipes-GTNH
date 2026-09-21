@@ -1410,6 +1410,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             lastAccessedCrafter = new WeakReference<>(tile.tile);
             // send the new crafted items to the destination
             ItemIdentifier extractedID = ItemIdentifier.get(extracted);
+            onResultExtracted(extractedID, extracted.stackSize);
             while (extracted.stackSize > 0) {
                 if (!doesExtractionMatch(nextOrder, extractedID)) {
                     LogisticsItemOrder startOrder = nextOrder;
@@ -1470,6 +1471,11 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             }
         }
     }
+
+    /**
+     * Called each time crafted items are pulled out of the machine for an order, before they are sent.
+     */
+    protected void onResultExtracted(ItemIdentifier item, int amount) {}
 
     private boolean doesExtractionMatch(LogisticsItemOrder nextOrder, ItemIdentifier extractedID) {
         return nextOrder.getResource().getItem().equals(extractedID)

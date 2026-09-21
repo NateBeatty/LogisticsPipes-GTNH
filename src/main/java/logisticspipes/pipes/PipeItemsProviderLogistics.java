@@ -30,6 +30,7 @@ import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.IOrderManagerContentReceiver;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IFilter;
+import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IProvideItems;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.logistics.LogisticsManager;
@@ -185,6 +186,18 @@ public class PipeItemsProviderLogistics extends CoreRoutedPipe implements IProvi
                     defersend = true;
                 }
             }
+            IGatedItemSink gate = IGatedItemSink.findTarget(dRtr, info);
+            if (gate != null) {
+                int allowed = gate.getGatedAllowance(item, info);
+                if (allowed < wanted) {
+                    wanted = allowed;
+                    if (wanted <= 0) {
+                        _orderManager.deferSend();
+                        return 0;
+                    }
+                    defersend = true;
+                }
+            }
             if (!canUseEnergy(wanted * neededEnergy())) {
                 return -1;
             }
@@ -202,6 +215,9 @@ public class PipeItemsProviderLogistics extends CoreRoutedPipe implements IProvi
             super.queueRoutedItem(routedItem, tile.orientation);
 
             _orderManager.sendSuccessfull(sent, defersend, routedItem);
+            if (gate != null) {
+                gate.onGatedSend(item, sent, info);
+            }
             return sent;
         }
         _orderManager.sendFailed();

@@ -27,6 +27,7 @@ import logisticspipes.interfaces.IModuleInventoryReceive;
 import logisticspipes.interfaces.IModuleWatchReciver;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IFilter;
+import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IProvideItems;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.logistics.LogisticsManager;
@@ -355,6 +356,18 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
                 defersend = true;
             }
         }
+        IGatedItemSink gate = IGatedItemSink.findTarget(dRtr, info);
+        if (gate != null) {
+            int allowed = gate.getGatedAllowance(item, info);
+            if (allowed < wanted) {
+                wanted = allowed;
+                if (wanted <= 0) {
+                    _service.getItemOrderManager().deferSend();
+                    return 0;
+                }
+                defersend = true;
+            }
+        }
         if (!_service.canUseEnergy(wanted * neededEnergy())) {
             return -1;
         }
@@ -369,6 +382,9 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
 
         IRoutedItem sendedItem = _service.sendStack(removed, destination, itemSendMode(), info);
         _service.getItemOrderManager().sendSuccessfull(sent, defersend, sendedItem);
+        if (gate != null) {
+            gate.onGatedSend(item, sent, info);
+        }
         return sent;
     }
 

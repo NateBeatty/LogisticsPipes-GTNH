@@ -53,6 +53,7 @@ import logisticspipes.modules.ModulePolymorphicItemSink;
 import logisticspipes.modules.ModuleProvider;
 import logisticspipes.modules.ModuleProviderMk2;
 import logisticspipes.modules.ModuleQuickSort;
+import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.modules.ModuleTerminus;
 import logisticspipes.modules.ModuleThaumicAspectSink;
 import logisticspipes.modules.ModuleTypeFilterItemSink;
@@ -113,6 +114,7 @@ public class ItemModule extends LogisticsItem {
     public static final int CRAFTER = 600;
     public static final int CRAFTER_MK2 = 601;
     public static final int CRAFTER_MK3 = 602;
+    public static final int SMART_CRAFTER = 603;
 
     private final List<Module> modules = new ArrayList<>();
 
@@ -203,6 +205,7 @@ public class ItemModule extends LogisticsItem {
         registerModule(ItemModule.CRAFTER, ModuleCrafter.class);
         registerModule(ItemModule.CRAFTER_MK2, ModuleCrafterMK2.class);
         registerModule(ItemModule.CRAFTER_MK3, ModuleCrafterMK3.class);
+        registerModule(ItemModule.SMART_CRAFTER, ModuleSmartCrafter.class);
         registerModule(ItemModule.ACTIVE_SUPPLIER, ModuleActiveSupplier.class);
         registerModule(ItemModule.CREATIVETABBASEDITEMSINK, ModuleCreativeTabBasedItemSink.class);
 
@@ -424,6 +427,7 @@ public class ItemModule extends LogisticsItem {
     public static boolean isCrafter(ItemStack itemStack) {
         return itemStack.getItem() instanceof ItemModule && (itemStack.getItemDamage() == ItemModule.CRAFTER
                 || itemStack.getItemDamage() == ItemModule.CRAFTER_MK2
-                || itemStack.getItemDamage() == ItemModule.CRAFTER_MK3);
+                || itemStack.getItemDamage() == ItemModule.CRAFTER_MK3
+                || itemStack.getItemDamage() == ItemModule.SMART_CRAFTER);
     }
 }
