@@ -31,6 +31,10 @@ import lombok.Getter;
  * ingredients stay reserved in storage instead of bouncing off a full machine.
  * <p>
  * Only ingredients delivered to this module's own machine are gated. Ingredients sent to satellites are not.
+ * <p>
+ * Sets are only released while this module holds the machine's claim ({@link MachineClaims}), so two Smart Crafters on
+ * one machine take turns instead of mixing their ingredients. When another crafter is waiting, the owner stops
+ * releasing new sets, lets the ones in the machine finish and hands the machine over.
  */
 public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink {
 
@@ -39,6 +43,13 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     private static final int MAX_SETS_IN_FLIGHT = 128;
     /** Slow re-check for results the module never saw (taken by a player, auto-output, failed chanced craft). */
     private static final int SAFETY_NET_TICKS = 100;
+    /** How often a held claim is refreshed. Must be well below {@link MachineClaims#CLAIM_TIMEOUT_TICKS}. */
+    private static final int CLAIM_REFRESH_TICKS = 20;
+    /**
+     * Released sets are given up after this long with no progress, once everything was delivered and none of the
+     * ingredients are left in the machine. Covers results that never come back to this module.
+     */
+    private static final int STUCK_TICKS = 400;
 
     /** Items per ingredient slot that providers may still send for the released sets. */
     private final int[] allowance = new int[INGREDIENT_SLOTS];
@@ -47,6 +58,15 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     private int setsReleased = 0;
     private int resultRemainder = 0;
     private boolean gateDirty = false;
+    private long lastProgressTick = 0;
+
+    /** The machine this module currently holds the claim for, or null. */
+    private MachineClaims.Key claimedMachine = null;
+    /** The machine this module is waiting to claim, or null. */
+    private MachineClaims.Key awaitedMachine = null;
+    /** Whether sets were released since the claim was taken, so a new owner always gets at least one turn. */
+    private boolean releasedThisTurn = false;
+    private long claimTakenTick = 0;
 
     /** True when not even one recipe set fits in an empty machine, so the gate can never open. */
     @Getter
@@ -81,9 +101,34 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         if (_service == null || !MainProxy.isServer(getWorld())) {
             return;
         }
+        if (claimedMachine != null && _service.isNthTick(CLAIM_REFRESH_TICKS)) {
+            if (claimedMachine.equals(machineKey())) {
+                MachineClaims.refresh(claimedMachine, this, now());
+            } else {
+                // The chassis was turned to face another block.
+                releaseClaim();
+                gateDirty = true;
+            }
+        }
         if (gateDirty || _service.isNthTick(SAFETY_NET_TICKS)) {
             updateGate();
         }
+    }
+
+    @Override
+    public void onAllowedRemoval() {
+        super.onAllowedRemoval();
+        releaseClaim();
+        stopWaiting();
+    }
+
+    /** Called by {@link MachineClaims} when the machine this module waited for is handed to it. */
+    void onClaimGranted(MachineClaims.Key machine) {
+        claimedMachine = machine;
+        awaitedMachine = null;
+        releasedThisTurn = false;
+        claimTakenTick = now();
+        gateDirty = true;
     }
 
     @Override
@@ -107,6 +152,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             setsReleased = Math.max(0, setsReleased - finished);
             gateDirty = true;
         }
+        lastProgressTick = now();
     }
 
     @Override
@@ -115,6 +161,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         int slot = ingredientSlot(info);
         if (slot >= 0) {
             inFlight[slot] = Math.max(0, inFlight[slot] - item.getStackSize());
+            lastProgressTick = now();
         }
     }
 
@@ -148,6 +195,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         }
         allowance[slot] = Math.max(0, allowance[slot] - amount);
         inFlight[slot] += amount;
+        lastProgressTick = now();
     }
 
     /* Gate */
@@ -164,18 +212,54 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             resetGate();
             return;
         }
+        giveUpStuckSets();
+
         int setsNeeded = (outstanding + result.getStackSize() - 1) / result.getStackSize();
         int toRelease = Math.min(setsNeeded, MAX_SETS_IN_FLIGHT) - setsReleased;
-        if (toRelease <= 0) {
-            return;
+        if (toRelease > 0 && mayReleaseSets()) {
+            int fits = countSetsThatFit(toRelease, false);
+            if (fits > 0) {
+                releaseSets(fits);
+                setTooLarge = false;
+            } else if (setsReleased == 0) {
+                setTooLarge = countSetsThatFit(1, true) == 0;
+            }
         }
-        int fits = countSetsThatFit(toRelease, false);
-        if (fits > 0) {
-            releaseSets(fits);
-            setTooLarge = false;
-        } else if (setsReleased == 0) {
-            setTooLarge = countSetsThatFit(1, true) == 0;
+
+        // Hand the machine over once the sets in it are done, if someone else is waiting for it. An owner that
+        // couldn't release anything (machine blocked) keeps it for a while first, so two blocked crafters don't pass it
+        // back and forth every tick.
+        boolean hadTurn = releasedThisTurn || now() - claimTakenTick >= SAFETY_NET_TICKS;
+        if (claimedMachine != null && hadTurn
+                && setsReleased == 0
+                && nothingInFlight()
+                && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
+            releaseClaim();
+            gateDirty = true; // queue up again behind the crafter that is waiting
         }
+    }
+
+    /**
+     * Takes the machine's claim if needed. An owner stops releasing new sets once another crafter waits, but only after
+     * it released at least once in its turn, so two crafters can't hand the machine back and forth without crafting
+     * anything.
+     */
+    private boolean mayReleaseSets() {
+        MachineClaims.Key machine = machineKey();
+        if (machine == null) {
+            return false;
+        }
+        if (claimedMachine == null) {
+            if (!MachineClaims.tryClaim(machine, this, now())) {
+                awaitedMachine = machine;
+                return false;
+            }
+            claimedMachine = machine;
+            awaitedMachine = null;
+            releasedThisTurn = false;
+            claimTakenTick = now();
+        }
+        return !releasedThisTurn || !MachineClaims.hasOthersWaiting(claimedMachine, this);
     }
 
     private void releaseSets(int sets) {
@@ -185,6 +269,39 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             }
         }
         setsReleased += sets;
+        releasedThisTurn = true;
+        lastProgressTick = now();
+    }
+
+    /**
+     * Gives up released sets whose results never came back to this module (taken by a player, auto-output, a chanced
+     * output that produced nothing). Only when everything was delivered, none of the ingredients are left in the
+     * machine and nothing happened for a while. A slow recipe that is still running is harmless to give up: its result
+     * is still counted when it comes out, and no extra ingredients arrive because providers only send what was ordered.
+     */
+    private void giveUpStuckSets() {
+        if (setsReleased == 0 || !nothingInFlight() || now() - lastProgressTick < STUCK_TICKS) {
+            return;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (allowance[slot] > 0) {
+                return;
+            }
+        }
+        if (machineHoldsIngredients()) {
+            return;
+        }
+        setsReleased = 0;
+        resultRemainder = 0;
+    }
+
+    private boolean nothingInFlight() {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (inFlight[slot] > 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void resetGate() {
@@ -195,6 +312,44 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         setsReleased = 0;
         resultRemainder = 0;
         setTooLarge = false;
+        releaseClaim();
+        stopWaiting();
+    }
+
+    private void releaseClaim() {
+        if (claimedMachine != null) {
+            MachineClaims.Key machine = claimedMachine;
+            claimedMachine = null;
+            MachineClaims.release(machine, this, now());
+        }
+        // Leftover permission from finished sets must not carry over into the next turn.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            allowance[slot] = 0;
+        }
+    }
+
+    private void stopWaiting() {
+        if (awaitedMachine != null) {
+            MachineClaims.stopWaiting(awaitedMachine, this);
+            awaitedMachine = null;
+        }
+    }
+
+    /** The block the chassis faces, which is where this module's ingredients go. */
+    private MachineClaims.Key machineKey() {
+        ForgeDirection dir = _service.inventoryOrientation();
+        if (dir == null || dir == ForgeDirection.UNKNOWN || getWorld() == null) {
+            return null;
+        }
+        return new MachineClaims.Key(
+                getWorld().provider.dimensionId,
+                getX() + dir.offsetX,
+                getY() + dir.offsetY,
+                getZ() + dir.offsetZ);
+    }
+
+    private long now() {
+        return getWorld() == null ? 0 : getWorld().getTotalWorldTime();
     }
 
     /**
@@ -262,8 +417,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         if (inv == null) {
             return 0;
         }
-        ForgeDirection side = getUpgradeManager().hasSneakyUpgrade() ? getUpgradeManager().getSneakyOrientation()
-                : _service.inventoryOrientation().getOpposite();
+        ForgeDirection side = insertionSide();
         int[] slots = insertableSlots(inv, side);
         ItemStack[] simulated = new ItemStack[slots.length];
         if (!emptyMachine) {
@@ -312,6 +466,32 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             }
         }
         return total;
+    }
+
+    /** Whether any of this recipe's gated ingredients are still sitting in the machine's input slots. */
+    private boolean machineHoldsIngredients() {
+        IInventory inv = _service.getRealInventory();
+        if (inv == null) {
+            return false;
+        }
+        int[] slots = insertableSlots(inv, insertionSide());
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isGatedSlot(slot)) {
+                continue;
+            }
+            ItemStack proto = getMaterials(slot).getItem().makeNormalStack(1);
+            for (int machineSlot : slots) {
+                if (isSameItem(inv.getStackInSlot(machineSlot), proto)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private ForgeDirection insertionSide() {
+        return getUpgradeManager().hasSneakyUpgrade() ? getUpgradeManager().getSneakyOrientation()
+                : _service.inventoryOrientation().getOpposite();
     }
 
     private static int[] insertableSlots(IInventory inv, ForgeDirection side) {
