@@ -9,7 +9,6 @@ import net.minecraftforge.common.util.ForgeDirection;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
-import logisticspipes.LogisticsPipes;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
@@ -268,13 +267,13 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         if (outstanding <= 0) {
             if (pendingLoadSweep) {
                 // Retried on the next update if the machine isn't reachable yet or another crafter is using it.
-                pendingLoadSweep = !sweepMachine("module loaded");
+                pendingLoadSweep = !sweepMachine();
             } else if (hadOrders) {
                 // The last order finished. Usually nothing is left, but a request that failed partway can leave part
                 // of a set behind, a lost item can turn up after its replacement did, and results beyond what was
                 // ordered stay in the output. Clearing them now, instead of at this crafter's next job, keeps the
                 // machine usable for other recipes, players or other automation in the meantime.
-                sweepMachine("last order finished");
+                sweepMachine();
             }
             hadOrders = false;
             resetGate();
@@ -291,7 +290,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
                 // First release since taking the machine: anything of this recipe still in it is stale (left over from
                 // before a restart, or from a job that didn't finish cleanly). Clear it so the room check sees the
                 // machine's real free space and the new sets don't mix with a partial old one.
-                sweepMachine("before first release");
+                sweepMachine();
                 sweepBeforeRelease = false;
             }
             int fits = countSetsThatFit(toRelease, false);
@@ -568,18 +567,9 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
      *
      * @return false if the machine couldn't be swept right now (not reachable, or in use by another crafter)
      */
-    private boolean sweepMachine(String reason) {
+    private boolean sweepMachine() {
         IInventory inv = _service.getRealInventory();
         MachineClaims.Key machine = machineKey();
-        // TODO remove: temporary sweep debugging
-        LogisticsPipes.log.info(
-                "[SmartCrafter DEBUG] sweep ({}) at {},{},{}: inventory={}, heldByOther={}",
-                reason,
-                getX(),
-                getY(),
-                getZ(),
-                inv == null ? "none" : inv.getClass().getSimpleName(),
-                machine != null && MachineClaims.isHeldByOther(machine, this, now()));
         if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
             return false;
         }
@@ -629,17 +619,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             if (stack == null || stack.stackSize <= 0) {
                 continue;
             }
-            boolean ingredient = isIngredient(stack);
-            boolean inputSlot = ingredient && isInputSlot(inv, machineSlot, stack, ourSide);
-            // TODO remove: temporary sweep debugging
-            LogisticsPipes.log.info(
-                    "[SmartCrafter DEBUG]   slot {}: {} x{}, ingredient={}, inputSlot={}",
-                    machineSlot,
-                    stack.getDisplayName(),
-                    stack.stackSize,
-                    ingredient,
-                    inputSlot);
-            if (!inputSlot) {
+            if (!isIngredient(stack) || !isInputSlot(inv, machineSlot, stack, ourSide)) {
                 continue;
             }
             ItemStack taken = inv.decrStackSize(machineSlot, stack.stackSize);
