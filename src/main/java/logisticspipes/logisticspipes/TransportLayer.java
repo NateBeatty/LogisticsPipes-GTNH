@@ -15,6 +15,14 @@ public abstract class TransportLayer {
 
     public abstract boolean stillWantItem(IRoutedItem item);
 
+    /**
+     * Like {@link #stillWantItem}, but for active deliveries (items sent for an order), which are normally always
+     * accepted. Returning false sends the item on to another destination.
+     */
+    public boolean acceptsActiveItem(IRoutedItem item) {
+        return true;
+    }
+
     public abstract ForgeDirection itemArrived(IRoutedItem item, ForgeDirection denyed);
 
     public void handleItem(IRoutedItem item) {}

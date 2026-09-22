@@ -61,7 +61,9 @@ public class RouteLayer {
                 item.getDistanceTracker().setDestinationReached();
             }
 
-            if (item.getTransportMode() != TransportMode.Active && !_transport.stillWantItem(item)) {
+            boolean wanted = item.getTransportMode() == TransportMode.Active ? _transport.acceptsActiveItem(item)
+                    : _transport.stillWantItem(item);
+            if (!wanted) {
                 return getOrientationForItem(
                         SimpleServiceLocator.logisticsManager.assignDestinationFor(item, _router.getSimpleID(), true),
                         null);

@@ -23,6 +23,12 @@ public interface IGatedItemSink {
     void onGatedSend(ItemIdentifier item, int amount, IAdditionalTargetInformation info);
 
     /**
+     * Whether the chassis should turn away a delivery of this item that carries no slot information. Such deliveries
+     * are items restored after a restart or chunk reload, whose orders no longer exist.
+     */
+    boolean declinesUntrackedItem(ItemIdentifier item);
+
+    /**
      * @return the gated module an order is addressed to, or null if the order isn't going to one.
      */
     static IGatedItemSink findTarget(IRouter destination, IAdditionalTargetInformation info) {

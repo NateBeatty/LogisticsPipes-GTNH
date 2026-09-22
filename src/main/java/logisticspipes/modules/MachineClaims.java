@@ -54,6 +54,18 @@ final class MachineClaims {
         return false;
     }
 
+    /** True if another crafter holds a live claim on the machine. */
+    static boolean isHeldByOther(Key machine, ModuleSmartCrafter crafter, long now) {
+        Claim claim = CLAIMS.get(machine);
+        if (claim == null) {
+            return false;
+        }
+        ModuleSmartCrafter owner = claim.owner.get();
+        return owner != null && owner != crafter
+                && now - claim.lastSeen <= CLAIM_TIMEOUT_TICKS
+                && now >= claim.lastSeen;
+    }
+
     static void refresh(Key machine, ModuleSmartCrafter crafter, long now) {
         Claim claim = CLAIMS.get(machine);
         if (claim != null && claim.owner.get() == crafter) {

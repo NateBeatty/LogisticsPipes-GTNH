@@ -1337,7 +1337,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             cachedAreAllOrderesToBuffer = false;
         }
 
-        if (!_service.isNthTick(6)) {
+        if (!shouldCheckMachine()) {
             return;
         }
 
@@ -1476,6 +1476,13 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
      * Called each time crafted items are pulled out of the machine for an order, before they are sent.
      */
     protected void onResultExtracted(ItemIdentifier item, int amount) {}
+
+    /**
+     * Whether to look into the machine this tick, for results to pull out (or for the cleanup upgrade).
+     */
+    protected boolean shouldCheckMachine() {
+        return _service.isNthTick(6);
+    }
 
     private boolean doesExtractionMatch(LogisticsItemOrder nextOrder, ItemIdentifier extractedID) {
         return nextOrder.getResource().getItem().equals(extractedID)

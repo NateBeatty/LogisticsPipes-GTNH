@@ -9,16 +9,21 @@ import net.minecraftforge.common.util.ForgeDirection;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
+import logisticspipes.LogisticsPipes;
+import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.proxy.MainProxy;
+import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.resources.DictResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.routing.LogisticsPromise;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
+import logisticspipes.utils.CacheHolder.CacheTypes;
+import logisticspipes.utils.SidedInventoryMinecraftAdapter;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import lombok.Getter;
@@ -50,6 +55,12 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
      * ingredients are left in the machine. Covers results that never come back to this module.
      */
     private static final int STUCK_TICKS = 400;
+    /** Result checks start this often and go back to it whenever something comes out (the normal crafter's rate). */
+    private static final int MIN_CHECK_TICKS = 6;
+    /** Result checks slow down to at most this interval while nothing comes out. */
+    private static final int MAX_CHECK_TICKS = 40;
+    /** Upper limit on stacks pulled out in one sweep, so a huge leftover pile can't flood the network at once. */
+    private static final int MAX_SWEEP_STACKS = 64;
 
     /** Items per ingredient slot that providers may still send for the released sets. */
     private final int[] allowance = new int[INGREDIENT_SLOTS];
@@ -57,7 +68,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     private final int[] inFlight = new int[INGREDIENT_SLOTS];
     private int setsReleased = 0;
     private int resultRemainder = 0;
-    private boolean gateDirty = false;
+    private boolean gateDirty = true; // run the load sweep on the first tick
     private long lastProgressTick = 0;
 
     /** The machine this module currently holds the claim for, or null. */
@@ -67,6 +78,16 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     /** Whether sets were released since the claim was taken, so a new owner always gets at least one turn. */
     private boolean releasedThisTurn = false;
     private long claimTakenTick = 0;
+
+    /** Sweep leftovers once the module is loaded: orders aren't saved, so anything of this recipe there is stale. */
+    private boolean pendingLoadSweep = true;
+    /** Whether this crafter had orders last time the gate was updated, to notice when its last order finishes. */
+    private boolean hadOrders = false;
+    /** Sweep leftovers before releasing the first sets after taking a machine. */
+    private boolean sweepBeforeRelease = false;
+
+    private int checkInterval = MIN_CHECK_TICKS;
+    private int checkCountdown = 0;
 
     /** True when not even one recipe set fits in an empty machine, so the gate can never open. */
     @Getter
@@ -128,7 +149,31 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         awaitedMachine = null;
         releasedThisTurn = false;
         claimTakenTick = now();
+        sweepBeforeRelease = true;
         gateDirty = true;
+    }
+
+    /**
+     * Checks the machine for results at the normal crafter's rate while results keep coming out, and backs off (up to
+     * {@link #MAX_CHECK_TICKS}) while they don't, so a long recipe isn't polled several times a second. Skipped while
+     * no sets are in the machine, since nothing can come out. Without orders the normal rate is kept, for the cleanup
+     * upgrade.
+     */
+    @Override
+    protected boolean shouldCheckMachine() {
+        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
+            return super.shouldCheckMachine();
+        }
+        if (setsReleased == 0) {
+            return false;
+        }
+        if (--checkCountdown > 0) {
+            return false;
+        }
+        // Assume this check finds nothing; onResultExtracted resets the interval if it does.
+        checkInterval = Math.min(checkInterval * 2, MAX_CHECK_TICKS);
+        checkCountdown = checkInterval;
+        return true;
     }
 
     @Override
@@ -145,6 +190,8 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         if (result == null || result.getStackSize() <= 0 || !isOurResult(item, result)) {
             return;
         }
+        checkInterval = MIN_CHECK_TICKS;
+        checkCountdown = MIN_CHECK_TICKS;
         resultRemainder += amount;
         int finished = resultRemainder / result.getStackSize();
         resultRemainder %= result.getStackSize();
@@ -198,6 +245,16 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         lastProgressTick = now();
     }
 
+    @Override
+    public boolean declinesUntrackedItem(ItemIdentifier item) {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /* Gate */
 
     private void updateGate() {
@@ -209,14 +266,34 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         }
         int outstanding = outstandingResults(result);
         if (outstanding <= 0) {
+            if (pendingLoadSweep) {
+                // Retried on the next update if the machine isn't reachable yet or another crafter is using it.
+                pendingLoadSweep = !sweepMachine("module loaded");
+            } else if (hadOrders) {
+                // The last order finished. Usually nothing is left, but a request that failed partway can leave part
+                // of a set behind, a lost item can turn up after its replacement did, and results beyond what was
+                // ordered stay in the output. Clearing them now, instead of at this crafter's next job, keeps the
+                // machine usable for other recipes, players or other automation in the meantime.
+                sweepMachine("last order finished");
+            }
+            hadOrders = false;
             resetGate();
             return;
         }
+        hadOrders = true;
+        pendingLoadSweep = false; // the pre-craft sweep below covers it
         giveUpStuckSets();
 
         int setsNeeded = (outstanding + result.getStackSize() - 1) / result.getStackSize();
         int toRelease = Math.min(setsNeeded, MAX_SETS_IN_FLIGHT) - setsReleased;
         if (toRelease > 0 && mayReleaseSets()) {
+            if (sweepBeforeRelease) {
+                // First release since taking the machine: anything of this recipe still in it is stale (left over from
+                // before a restart, or from a job that didn't finish cleanly). Clear it so the room check sees the
+                // machine's real free space and the new sets don't mix with a partial old one.
+                sweepMachine("before first release");
+                sweepBeforeRelease = false;
+            }
             int fits = countSetsThatFit(toRelease, false);
             if (fits > 0) {
                 releaseSets(fits);
@@ -258,11 +335,17 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             awaitedMachine = null;
             releasedThisTurn = false;
             claimTakenTick = now();
+            sweepBeforeRelease = true;
         }
         return !releasedThisTurn || !MachineClaims.hasOthersWaiting(claimedMachine, this);
     }
 
     private void releaseSets(int sets) {
+        if (setsReleased == 0) {
+            // Nothing was in the machine, so result checks may have backed off; start again at the normal rate.
+            checkInterval = MIN_CHECK_TICKS;
+            checkCountdown = MIN_CHECK_TICKS;
+        }
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 allowance[slot] += sets * getMaterials(slot).getStackSize();
@@ -466,6 +549,149 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             }
         }
         return total;
+    }
+
+    /**
+     * Pulls this recipe's own leftover items out of the machine the chassis faces and sends them into the network,
+     * usually to storage. Other recipes' items are never touched. Never runs while another Smart Crafter holds the
+     * machine, since two recipes can share an ingredient.
+     * <p>
+     * Results and ingredients are taken out differently:
+     * <ul>
+     * <li>The result only through the machine's normal extraction rules, i.e. from its output slots. Some machines keep
+     * a player-set copy of the result elsewhere (e.g. the auto-chisel's target slot), which must stay.</li>
+     * <li>Ingredients directly from the slot, bypassing the extraction rules: GT machines don't let anything pull from
+     * their input slots, so leftover ingredients could otherwise never be cleared. To keep this from touching template
+     * or config slots (molds, circuits, targets), only input slots are emptied: slots a pipe could insert into from
+     * some side ({@link #isInputSlot}).</li>
+     * </ul>
+     *
+     * @return false if the machine couldn't be swept right now (not reachable, or in use by another crafter)
+     */
+    private boolean sweepMachine(String reason) {
+        IInventory inv = _service.getRealInventory();
+        MachineClaims.Key machine = machineKey();
+        // TODO remove: temporary sweep debugging
+        LogisticsPipes.log.info(
+                "[SmartCrafter DEBUG] sweep ({}) at {},{},{}: inventory={}, heldByOther={}",
+                reason,
+                getX(),
+                getY(),
+                getZ(),
+                inv == null ? "none" : inv.getClass().getSimpleName(),
+                machine != null && MachineClaims.isHeldByOther(machine, this, now()));
+        if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
+            return false;
+        }
+        int stacks = sweepResult(inv);
+        stacks += sweepIngredients(inv, MAX_SWEEP_STACKS - stacks);
+        if (stacks > 0) {
+            _service.getCacheHolder().trigger(CacheTypes.Inventory);
+        }
+        return true;
+    }
+
+    /** @return how many stacks were taken out */
+    private int sweepResult(IInventory inv) {
+        ItemIdentifierStack result = getConfiguredCraftResult();
+        if (result == null) {
+            return 0;
+        }
+        ItemIdentifier item = result.getItem();
+        IInventory extractable = inv instanceof ISidedInventory
+                ? new SidedInventoryMinecraftAdapter((ISidedInventory) inv, ForgeDirection.UNKNOWN, true)
+                : inv;
+        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
+                .getInventoryUtil(extractable, _service.inventoryOrientation());
+        int stacks = 0;
+        int left = util.itemCount(item);
+        while (left > 0 && stacks < MAX_SWEEP_STACKS) {
+            ItemStack taken = util.getMultipleItems(item, Math.min(left, item.getMaxStackSize()));
+            if (taken == null || taken.stackSize <= 0) {
+                break;
+            }
+            left -= taken.stackSize;
+            stacks++;
+            sendSwept(taken);
+        }
+        return stacks;
+    }
+
+    /** @return how many stacks were taken out */
+    private int sweepIngredients(IInventory inv, int maxStacks) {
+        ForgeDirection ourSide = insertionSide();
+        int stacks = 0;
+        for (int machineSlot = 0; machineSlot < inv.getSizeInventory(); machineSlot++) {
+            if (stacks >= maxStacks) {
+                break;
+            }
+            ItemStack stack = inv.getStackInSlot(machineSlot);
+            if (stack == null || stack.stackSize <= 0) {
+                continue;
+            }
+            boolean ingredient = isIngredient(stack);
+            boolean inputSlot = ingredient && isInputSlot(inv, machineSlot, stack, ourSide);
+            // TODO remove: temporary sweep debugging
+            LogisticsPipes.log.info(
+                    "[SmartCrafter DEBUG]   slot {}: {} x{}, ingredient={}, inputSlot={}",
+                    machineSlot,
+                    stack.getDisplayName(),
+                    stack.stackSize,
+                    ingredient,
+                    inputSlot);
+            if (!inputSlot) {
+                continue;
+            }
+            ItemStack taken = inv.decrStackSize(machineSlot, stack.stackSize);
+            if (taken != null && taken.stackSize > 0) {
+                stacks++;
+                sendSwept(taken);
+            }
+        }
+        return stacks;
+    }
+
+    /**
+     * Whether a pipe could insert this stack into the slot from any side, i.e. it's an input slot rather than a
+     * template, config or circuit slot. Not just from our side: GT machines refuse input on their output face (unless
+     * "allow input from output side" is on), on their main face and on faces with a blocking cover, and the chassis
+     * usually sits on the output face to pull results. Our side is tried first since it usually answers yes.
+     */
+    private static boolean isInputSlot(IInventory inv, int slot, ItemStack stack, ForgeDirection ourSide) {
+        if (!(inv instanceof ISidedInventory)) {
+            return inv.isItemValidForSlot(slot, stack);
+        }
+        if (isInsertableFrom(inv, ourSide, slot, stack)) {
+            return true;
+        }
+        for (ForgeDirection side : ForgeDirection.VALID_DIRECTIONS) {
+            if (side != ourSide && isInsertableFrom(inv, side, slot, stack)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isInsertableFrom(IInventory inv, ForgeDirection side, int slot, ItemStack stack) {
+        for (int accessible : insertableSlots(inv, side)) {
+            if (accessible == slot) {
+                return canInsert(inv, side, slot, stack);
+            }
+        }
+        return false;
+    }
+
+    private boolean isIngredient(ItemStack stack) {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot) && isSameItem(stack, getMaterials(slot).getItem().makeNormalStack(1))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void sendSwept(ItemStack stack) {
+        _service.queueRoutedItem(SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack), ForgeDirection.UP);
     }
 
     /** Whether any of this recipe's gated ingredients are still sitting in the machine's input slots. */
