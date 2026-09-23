@@ -398,6 +398,31 @@ gui.crafting.OrePrefix=OrePrefix
 gui.crafting.Include=Include
 gui.crafting.Exclude=Exclude
 
+gui.smartcrafter.Title=Smart Crafter
+gui.smartcrafter.Inputs=Inputs
+gui.smartcrafter.Outputs=Outputs
+gui.smartcrafter.Open=Open
+gui.smartcrafter.Import=Import
+gui.smartcrafter.Request=Request set
+gui.smartcrafter.Priority=Priority
+gui.smartcrafter.Cleanup=Clean up machine
+gui.smartcrafter.SetsInFlight=Sets
+gui.smartcrafter.Auto=auto
+gui.smartcrafter.Off=Off
+gui.smartcrafter.PRODUCT=Product
+gui.smartcrafter.BYPRODUCT=Byproduct
+gui.smartcrafter.BYPRODUCT_COUNTED=Byproduct+
+gui.smartcrafter.tooltip.InputSatellite=Satellite ID this ingredient is sent to. Off = this module's own machine.
+gui.smartcrafter.tooltip.OutputSatellite=Satellite ID this result comes out of. Not used yet - every result is taken from this module's own machine.
+gui.smartcrafter.tooltip.Chance=Percent chance of getting this result from one set. Below 100 it cannot be counted as a planned extra.
+gui.smartcrafter.status.0=Crafting
+gui.smartcrafter.status.1=Idle
+gui.smartcrafter.status.2=No craftable output - set an output to Product
+gui.smartcrafter.status.3=No machine in front of this module
+gui.smartcrafter.status.4=A recipe set does not fit: machine full, too small, or refusing input from this side
+gui.smartcrafter.status.5=Waiting for another crafter to release the machine
+gui.smartcrafter.status.6=Waiting for ingredients
+
 gui.firewall.Blocked=Blocked
 gui.firewall.Allowed=Allowed
 gui.firewall.Firewall=Firewall

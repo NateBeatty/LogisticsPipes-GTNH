@@ -17,6 +17,10 @@ public class NEILogisticsPipesConfig implements IConfigureNEI {
 
     public static boolean added = false;
 
+    /** Guis that take a recipe from NEI through {@link CraftingPipeOverlayHandler}. */
+    private static final Class<? extends net.minecraft.client.gui.inventory.GuiContainer>[] CRAFTER_GUIS = new Class[] {
+            logisticspipes.gui.GuiCraftingPipe.class, logisticspipes.gui.GuiSmartCrafter.class };
+
     @Override
     public void loadConfig() {
 
@@ -53,26 +57,23 @@ public class NEILogisticsPipesConfig implements IConfigureNEI {
                 "crafting");
         API.registerGuiOverlayHandler(GuiRequestTable.class, new LogisticsCraftingOverlayHandler(), "crafting");
 
-        API.registerGuiOverlayHandler(
-                logisticspipes.gui.GuiCraftingPipe.class,
-                new CraftingPipeOverlayHandler(),
-                "crafting");
-        API.registerGuiOverlayHandler(
-                logisticspipes.gui.GuiCraftingPipe.class,
-                new CraftingPipeOverlayHandler(),
-                "smelting");
-
-        API.registerGuiOverlayHandler(logisticspipes.gui.GuiCraftingPipe.class, new CraftingPipeOverlayHandler(), null);
+        for (Class<? extends net.minecraft.client.gui.inventory.GuiContainer> crafterGui : CRAFTER_GUIS) {
+            API.registerGuiOverlayHandler(crafterGui, new CraftingPipeOverlayHandler(), "crafting");
+            API.registerGuiOverlayHandler(crafterGui, new CraftingPipeOverlayHandler(), "smelting");
+            API.registerGuiOverlayHandler(crafterGui, new CraftingPipeOverlayHandler(), null);
+        }
 
         if (LogisticsPipes.isGTNH) {
 
             for (gregtech.api.recipe.RecipeMap map : gregtech.api.recipe.RecipeMap.ALL_RECIPE_MAPS.values()) {
                 if (!map.unlocalizedName.isEmpty()) {
-                    API.registerGuiOverlay(logisticspipes.gui.GuiCraftingPipe.class, map.unlocalizedName);
-                    API.registerGuiOverlayHandler(
-                            logisticspipes.gui.GuiCraftingPipe.class,
-                            new CraftingPipeOverlayHandler(),
-                            map.unlocalizedName);
+                    for (Class<? extends net.minecraft.client.gui.inventory.GuiContainer> crafterGui : CRAFTER_GUIS) {
+                        API.registerGuiOverlay(crafterGui, map.unlocalizedName);
+                        API.registerGuiOverlayHandler(
+                                crafterGui,
+                                new CraftingPipeOverlayHandler(),
+                                map.unlocalizedName);
+                    }
                     API.registerGuiOverlay(GuiLogisticsCraftingTable.class, map.unlocalizedName);
                     API.registerGuiOverlayHandler(
                             GuiLogisticsCraftingTable.class,

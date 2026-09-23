@@ -14,7 +14,7 @@ import codechicken.nei.PositionedStack;
 import codechicken.nei.api.IOverlayHandler;
 import codechicken.nei.recipe.IRecipeHandler;
 import codechicken.nei.recipe.StackInfo;
-import logisticspipes.gui.GuiCraftingPipe;
+import logisticspipes.gui.modules.ModuleBaseGui;
 import logisticspipes.gui.popup.GuiRecipeImport;
 import logisticspipes.modules.ModuleCrafter;
 import logisticspipes.network.PacketHandler;
@@ -27,12 +27,14 @@ public class CraftingPipeOverlayHandler implements IOverlayHandler {
     @Override
     public void overlayRecipe(GuiContainer firstGui, IRecipeHandler recipe, int recipeIndex, boolean maxTransfer) {
 
-        if (!(firstGui instanceof GuiCraftingPipe)) {
+        // Both the crafting pipe's gui and the Smart Crafter's take the same import packet.
+        if (!(firstGui instanceof ModuleBaseGui)
+                || !(((ModuleBaseGui) firstGui).getModule() instanceof ModuleCrafter)) {
             return;
         }
 
-        GuiCraftingPipe gui = (GuiCraftingPipe) firstGui;
-        ModuleCrafter module = gui.get_pipe();
+        ModuleBaseGui gui = (ModuleBaseGui) firstGui;
+        ModuleCrafter module = (ModuleCrafter) gui.getModule();
 
         List<List<ItemStack>> inputOptions = new ArrayList<>();
         List<ItemStack> outputs = new ArrayList<>();

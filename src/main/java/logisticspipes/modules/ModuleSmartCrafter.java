@@ -1,11 +1,18 @@
 package logisticspipes.modules;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import net.minecraft.client.renderer.texture.IIconRegister;
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.ISidedInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IIcon;
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.FluidStack;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
@@ -14,17 +21,32 @@ import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestItems;
+import logisticspipes.network.NewGuiHandler;
+import logisticspipes.network.PacketHandler;
+import logisticspipes.network.abstractguis.ModuleCoordinatesGuiProvider;
+import logisticspipes.network.abstractguis.ModuleInHandGuiProvider;
+import logisticspipes.network.abstractpackets.ModernPacket;
+import logisticspipes.network.guis.module.inhand.SmartCrafterInHand;
+import logisticspipes.network.guis.module.inpipe.SmartCrafterModuleSlot;
+import logisticspipes.network.packets.cpipe.SmartCrafterSetting;
+import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.request.IReqCraftingTemplate;
+import logisticspipes.request.RequestTree;
 import logisticspipes.request.resources.DictResource;
 import logisticspipes.request.resources.IResource;
+import logisticspipes.request.resources.ItemResource;
+import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
 import logisticspipes.utils.item.ItemIdentifier;
+import logisticspipes.utils.item.ItemIdentifierInventory;
 import logisticspipes.utils.item.ItemIdentifierStack;
+import logisticspipes.utils.string.StringUtils;
 import lombok.Getter;
 
 /**
@@ -43,6 +65,11 @@ import lombok.Getter;
 public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink {
 
     private static final int INGREDIENT_SLOTS = 9;
+    /** Result slots, each with its own {@link OutputRole}. They follow the ingredient slots in the inventory. */
+    public static final int OUTPUT_SLOTS = 3;
+    private static final int INVENTORY_SIZE = INGREDIENT_SLOTS + OUTPUT_SLOTS;
+    /** Chance values are whole percent. */
+    private static final int GUARANTEED = 100;
     /** Upper limit on sets released but not yet finished, so a huge inventory can't make the room check loop long. */
     private static final int MAX_SETS_IN_FLIGHT = 128;
     /** Slow re-check for results the module never saw (taken by a player, auto-output, failed chanced craft). */
@@ -54,19 +81,20 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
      * ingredients are left in the machine. Covers results that never come back to this module.
      */
     private static final int STUCK_TICKS = 400;
-    /** Result checks start this often and go back to it whenever something comes out (the normal crafter's rate). */
-    private static final int MIN_CHECK_TICKS = 6;
-    /** Result checks slow down to at most this interval while nothing comes out. */
-    private static final int MAX_CHECK_TICKS = 40;
     /** Upper limit on stacks pulled out in one sweep, so a huge leftover pile can't flood the network at once. */
     private static final int MAX_SWEEP_STACKS = 64;
+    /** How often results no order is waiting for are cleared out of the machine. */
+    private static final int UNORDERED_OUTPUT_TICKS = 20;
 
     /** Items per ingredient slot that providers may still send for the released sets. */
     private final int[] allowance = new int[INGREDIENT_SLOTS];
     /** Items per ingredient slot that were sent but haven't arrived yet. */
     private final int[] inFlight = new int[INGREDIENT_SLOTS];
     private int setsReleased = 0;
-    private int resultRemainder = 0;
+    /** Results pulled out since the gate was last reset, per output slot. */
+    private final int[] extractedPerOutput = new int[OUTPUT_SLOTS];
+    /** Sets already taken off {@link #setsReleased} by {@link #onResultExtracted}, so none is counted twice. */
+    private int creditedSets = 0;
     private boolean gateDirty = true; // run the load sweep on the first tick
     private long lastProgressTick = 0;
 
@@ -84,15 +112,432 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     private boolean hadOrders = false;
     /** Sweep leftovers before releasing the first sets after taking a machine. */
     private boolean sweepBeforeRelease = false;
-
-    private int checkInterval = MIN_CHECK_TICKS;
-    private int checkCountdown = 0;
+    /** Sets asked for through the gui's "Request set" button, which have no order behind them. */
+    private int pendingManualSets = 0;
+    /** Master switch for the built-in sweeps. Off leaves whatever is in the machine alone. */
+    private boolean cleanupEnabled = true;
 
     /** True when not even one recipe set fits in an empty machine, so the gate can never open. */
     @Getter
     private boolean setTooLarge = false;
 
-    public ModuleSmartCrafter() {}
+    /**
+     * What an output slot means for planning. All three are pulled out of the machine; they differ in what the planner
+     * may do with them.
+     */
+    public enum OutputRole {
+
+        /** The module advertises itself as a way to craft this item ({@link #canCraft}). */
+        PRODUCT,
+        /** Made on the side. Never craftable, never promised; goes to storage. */
+        BYPRODUCT,
+        /**
+         * Made on the side, and registered as an extra once the craft runs, so a <b>later</b> request can spend it
+         * instead of sourcing that item elsewhere. It cannot help the request that produced it:
+         * {@code RequestTreeNode.checkForExtras} walks the tree's {@code extrapromises}, never its {@code byproducts},
+         * which are only handed to {@code registerExtras} in {@code fullFill}, after planning is done.
+         */
+        BYPRODUCT_COUNTED;
+
+        public OutputRole next(boolean allowCounted) {
+            switch (this) {
+                case PRODUCT:
+                    return BYPRODUCT;
+                case BYPRODUCT:
+                    return allowCounted ? BYPRODUCT_COUNTED : PRODUCT;
+                default:
+                    return PRODUCT;
+            }
+        }
+    }
+
+    private final OutputRole[] outputRole = new OutputRole[OUTPUT_SLOTS];
+    /** Percent chance of getting this output from one set. {@link #GUARANTEED} means every set yields it. */
+    private final int[] outputChance = new int[OUTPUT_SLOTS];
+    /**
+     * Which satellite an output comes out of, for a recipe whose results appear somewhere other than the block this
+     * module faces (a multiblock's output bus). <b>Stored and edited, but nothing reads it yet:</b> extracting through
+     * a satellite needs the Smart Satellite, which doesn't exist. Until then every output is taken from this module's
+     * own machine, whatever is set here.
+     */
+    private final int[] outputSatelliteId = new int[OUTPUT_SLOTS];
+
+    public ModuleSmartCrafter() {
+        _dummyInventory = new ItemIdentifierInventory(
+                INVENTORY_SIZE,
+                StringUtils.translate("gui.module.requestedItems"),
+                127);
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
+            outputChance[i] = GUARANTEED;
+        }
+    }
+
+    /* Outputs */
+
+    public static int outputInventorySlot(int output) {
+        return INGREDIENT_SLOTS + output;
+    }
+
+    public ItemIdentifierStack getOutput(int output) {
+        return _dummyInventory.getIDStackInSlot(outputInventorySlot(output));
+    }
+
+    public OutputRole getOutputRole(int output) {
+        return outputRole[output];
+    }
+
+    public void setOutputRole(int output, OutputRole role) {
+        outputRole[output] = role == OutputRole.BYPRODUCT_COUNTED && isChanced(output) ? OutputRole.BYPRODUCT : role;
+    }
+
+    public int getOutputChance(int output) {
+        return outputChance[output];
+    }
+
+    public void setOutputChance(int output, int chance) {
+        outputChance[output] = Math.max(1, Math.min(GUARANTEED, chance));
+        // A chanced output may not be promised: the set it was planned into can produce nothing.
+        if (isChanced(output) && outputRole[output] == OutputRole.BYPRODUCT_COUNTED) {
+            outputRole[output] = OutputRole.BYPRODUCT;
+        }
+    }
+
+    public boolean isChanced(int output) {
+        return outputChance[output] < GUARANTEED;
+    }
+
+    /** See {@link #outputSatelliteId}: set by the player, not acted on yet. */
+    public int getOutputSatelliteId(int output) {
+        return outputSatelliteId[output];
+    }
+
+    public void setOutputSatelliteId(int output, int satelliteId) {
+        outputSatelliteId[output] = Math.max(0, satelliteId);
+    }
+
+    /** The output whose arrivals count finished sets. */
+    private int primaryOutput() {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (outputRole[i] == OutputRole.PRODUCT && getOutput(i) != null) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** True while no output can be requested, so nothing will ever start this recipe. */
+    public boolean hasNoCraftableOutput() {
+        return primaryOutput() < 0;
+    }
+
+    @Override
+    public ItemIdentifierStack getConfiguredCraftResult() {
+        int primary = primaryOutput();
+        return primary < 0 ? null : getOutput(primary);
+    }
+
+    @Override
+    public List<ItemIdentifierStack> getConfiguredCraftResults() {
+        List<ItemIdentifierStack> list = new ArrayList<>(OUTPUT_SLOTS);
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (outputRole[i] != OutputRole.PRODUCT) {
+                continue;
+            }
+            ItemIdentifierStack output = getOutput(i);
+            if (output != null) {
+                list.add(output);
+            }
+        }
+        return list;
+    }
+
+    @Override
+    public boolean canCraft(IResource toCraft) {
+        if (!(toCraft instanceof ItemResource) && !(toCraft instanceof DictResource)) {
+            return false;
+        }
+        for (ItemIdentifierStack result : getConfiguredCraftResults()) {
+            if (toCraft.matches(result.getItem(), IResource.MatchSettings.NORMAL)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    protected void addTemplateByproducts(IReqCraftingTemplate template) {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (outputRole[i] == OutputRole.BYPRODUCT_COUNTED && output != null) {
+                template.addByproduct(output);
+            }
+        }
+    }
+
+    /** The byproduct upgrade's extra slot doesn't exist here; roles do the same job. */
+    @Override
+    public ItemIdentifierStack getByproductItem() {
+        return null;
+    }
+
+    /** Built in, no Advanced Satellite upgrade needed. */
+    @Override
+    protected boolean usesPerSlotSatellites() {
+        return true;
+    }
+
+    /* Settings sync */
+
+    @Override
+    public ModernPacket getCPipePacket() {
+        SmartCrafterUpdatePacket packet = PacketHandler.getPacket(SmartCrafterUpdatePacket.class);
+        int[] roles = new int[OUTPUT_SLOTS];
+        int[] chances = new int[OUTPUT_SLOTS];
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            roles[i] = outputRole[i].ordinal();
+            chances[i] = outputChance[i];
+        }
+        packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
+                .setCleanupEnabled(cleanupEnabled)
+                .setStatus(MainProxy.isServer(getWorld()) ? computeStatus() : lastStatus).setSetsReleased(setsReleased);
+        packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
+                .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
+                .setLiquidSatelliteId(liquidSatelliteId);
+        packet.setModulePos(this);
+        return packet;
+    }
+
+    public void handleSmartUpdatePacket(SmartCrafterUpdatePacket packet) {
+        int[] roles = packet.getOutputRole();
+        int[] chances = packet.getOutputChance();
+        int[] satellites = packet.getOutputSatelliteId();
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (i < roles.length && roles[i] >= 0 && roles[i] < OutputRole.values().length) {
+                outputRole[i] = OutputRole.values()[roles[i]];
+            }
+            if (i < chances.length && chances[i] > 0) {
+                outputChance[i] = Math.min(GUARANTEED, chances[i]);
+            }
+            if (i < satellites.length) {
+                outputSatelliteId[i] = Math.max(0, satellites[i]);
+            }
+        }
+        cleanupEnabled = packet.isCleanupEnabled();
+        lastStatus = packet.getStatus();
+        setsReleased = packet.getSetsReleased();
+    }
+
+    /** Client-side copy of the last status the server sent, for the gui's warning line. */
+    private int lastStatus = STATUS_IDLE;
+
+    public int getLastStatus() {
+        return lastStatus;
+    }
+
+    /** Applies one setting from {@link SmartCrafterSetting}, on either side. */
+    public void handleSettingPacket(int setting, int index, int value) {
+        switch (setting) {
+            case SmartCrafterSetting.SATELLITE:
+                if (index >= 0 && index < INGREDIENT_SLOTS) {
+                    advancedSatelliteIdArray[index] = Math.max(0, value);
+                    gateDirty = true;
+                }
+                return;
+            case SmartCrafterSetting.OUTPUT_SATELLITE:
+                if (index >= 0 && index < OUTPUT_SLOTS) {
+                    setOutputSatelliteId(index, value);
+                }
+                return;
+            case SmartCrafterSetting.OUTPUT_ROLE:
+                if (index >= 0 && index < OUTPUT_SLOTS && value >= 0 && value < OutputRole.values().length) {
+                    setOutputRole(index, OutputRole.values()[value]);
+                }
+                return;
+            case SmartCrafterSetting.OUTPUT_CHANCE:
+                if (index >= 0 && index < OUTPUT_SLOTS) {
+                    setOutputChance(index, value);
+                }
+                return;
+            case SmartCrafterSetting.CLEANUP:
+                cleanupEnabled = value != 0;
+                return;
+            default:
+        }
+    }
+
+    public boolean isCleanupEnabled() {
+        return cleanupEnabled;
+    }
+
+    @Override
+    protected ModuleCoordinatesGuiProvider getPipeGuiProvider() {
+        return NewGuiHandler.getGui(SmartCrafterModuleSlot.class);
+    }
+
+    @Override
+    protected ModuleInHandGuiProvider getInHandGuiProvider() {
+        return NewGuiHandler.getGui(SmartCrafterInHand.class);
+    }
+
+    /* Status, for the gui's warning line */
+
+    public static final int STATUS_RUNNING = 0;
+    public static final int STATUS_IDLE = 1;
+    public static final int STATUS_NO_PRODUCT = 2;
+    public static final int STATUS_NO_MACHINE = 3;
+    public static final int STATUS_SET_TOO_LARGE = 4;
+    public static final int STATUS_WAITING_CLAIM = 5;
+    public static final int STATUS_HOLDING = 6;
+
+    public int computeStatus() {
+        if (hasNoCraftableOutput()) {
+            return STATUS_NO_PRODUCT;
+        }
+        if (_service == null || _service.getRealInventory() == null) {
+            return STATUS_NO_MACHINE;
+        }
+        if (setTooLarge) {
+            return STATUS_SET_TOO_LARGE;
+        }
+        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
+            return STATUS_IDLE;
+        }
+        MachineClaims.Key machine = machineKey();
+        if (machine != null && MachineClaims.isHeldByOther(machine, this, now())) {
+            return STATUS_WAITING_CLAIM;
+        }
+        return setsReleased > 0 ? STATUS_RUNNING : STATUS_HOLDING;
+    }
+
+    /** Sets released into the machine and not yet finished, shown next to the status. */
+    public int getSetsReleased() {
+        return setsReleased;
+    }
+
+    /**
+     * Requests one more set of ingredients. For sets a machine consumed without producing anything (GTNH cleanrooms
+     * void ingredients), where nothing is reported lost and the order would otherwise wait forever.
+     */
+    public void requestOneSet(EntityPlayer player) {
+        int slots = 0;
+        int satisfied = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            ItemIdentifierStack material = getMaterials(slot);
+            if (material == null || material.getStackSize() <= 0) {
+                continue;
+            }
+            slots++;
+            IRequestItems target = this;
+            if (advancedSatelliteIdArray[slot] != 0) {
+                IRouter router = getSatelliteRouter(slot);
+                if (router != null) {
+                    target = (IRequestItems) router.getPipe();
+                }
+            }
+            int got = RequestTree.requestPartial(
+                    new ItemIdentifierStack(material.getItem(), material.getStackSize()),
+                    target,
+                    new CraftingChassieInformation(slot, getPositionInt()));
+            if (got >= material.getStackSize()) {
+                satisfied++;
+            }
+        }
+        if (slots == 0) {
+            say(player, "no ingredients configured");
+            return;
+        }
+        // One more set of work for the gate, which then grants the allowance through the normal release path (room
+        // check and machine claim included). Raising the allowance here instead would be undone by the next
+        // updateGate: with no order behind this set it takes the "nothing to do" branch and resets the gate.
+        pendingManualSets++;
+        int waitingBefore = pendingManualSets;
+        // Run the gate now rather than on the next tick, so the answer below is what actually happened.
+        updateGate();
+        String outcome = pendingManualSets < waitingBefore ? "on its way" : whyNotReleased();
+        say(player, satisfied + "/" + slots + " ingredients found, " + outcome);
+    }
+
+    /** Why the gate didn't hand a set over, for the "Request set" reply. */
+    private String whyNotReleased() {
+        MachineClaims.Key machine = machineKey();
+        if (machine == null || _service.getRealInventory() == null) {
+            return "no machine in front of this module";
+        }
+        if (MachineClaims.isHeldByOther(machine, this, now())) {
+            return "another crafter is using the machine";
+        }
+        if (countSetsThatFit(1, false) == 0) {
+            return countSetsThatFit(1, true) == 0 ? "a set does not fit this machine at all"
+                    : "no room in the machine right now";
+        }
+        return "queued, waiting for ingredients";
+    }
+
+    private void say(EntityPlayer player, String message) {
+        if (player != null) {
+            player.addChatMessage(new ChatComponentText("Smart Crafter: " + message));
+        }
+    }
+
+    /** Sends one setting to the server, from the gui. */
+    public void sendSetting(int setting, int index, int value) {
+        handleSettingPacket(setting, index, value);
+        MainProxy.sendPacketToServer(
+                PacketHandler.getPacket(SmartCrafterSetting.class).setSetting(setting).setIndex(index).setValue(value)
+                        .setModulePos(this));
+    }
+
+    @Override
+    public void readFromNBT(NBTTagCompound nbttagcompound) {
+        super.readFromNBT(nbttagcompound);
+        cleanupEnabled = !nbttagcompound.hasKey("SmartCleanup") || nbttagcompound.getBoolean("SmartCleanup");
+        int[] roles = nbttagcompound.getIntArray("SmartOutputRole");
+        int[] chances = nbttagcompound.getIntArray("SmartOutputChance");
+        int[] satellites = nbttagcompound.getIntArray("SmartOutputSatellite");
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (i < roles.length && roles[i] >= 0 && roles[i] < OutputRole.values().length) {
+                outputRole[i] = OutputRole.values()[roles[i]];
+            }
+            if (i < chances.length && chances[i] > 0) {
+                outputChance[i] = Math.min(GUARANTEED, chances[i]);
+            }
+            if (i < satellites.length) {
+                outputSatelliteId[i] = Math.max(0, satellites[i]);
+            }
+        }
+    }
+
+    @Override
+    public void writeToNBT(NBTTagCompound nbttagcompound) {
+        super.writeToNBT(nbttagcompound);
+        int[] roles = new int[OUTPUT_SLOTS];
+        int[] chances = new int[OUTPUT_SLOTS];
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            roles[i] = outputRole[i].ordinal();
+            chances[i] = outputChance[i];
+        }
+        nbttagcompound.setIntArray("SmartOutputRole", roles);
+        nbttagcompound.setIntArray("SmartOutputChance", chances);
+        nbttagcompound.setIntArray("SmartOutputSatellite", outputSatelliteId);
+        nbttagcompound.setBoolean("SmartCleanup", cleanupEnabled);
+    }
+
+    @Override
+    public void handleAdvancedNEIRecipePacket(List<ItemStack> inputs, List<ItemStack> outputs,
+            List<FluidStack> fluidInputs, EntityPlayer player) {
+        super.handleAdvancedNEIRecipePacket(inputs, outputs, fluidInputs, player);
+        // The base only fills two result slots, and the second one as the upgrade's byproduct slot.
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            _dummyInventory
+                    .setInventorySlotContents(outputInventorySlot(i), i < outputs.size() ? outputs.get(i) : null);
+            outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
+            outputChance[i] = GUARANTEED;
+        }
+        if (player != null) {
+            MainProxy.sendPacketToPlayer(getCPipePacket(), player);
+        }
+    }
 
     @Override
     @SideOnly(Side.CLIENT)
@@ -133,6 +578,46 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         if (gateDirty || _service.isNthTick(SAFETY_NET_TICKS)) {
             updateGate();
         }
+        if (_service.isNthTick(UNORDERED_OUTPUT_TICKS)) {
+            drainUnorderedOutputs();
+        }
+    }
+
+    /**
+     * Takes results nothing asked for out of the machine and sends them to storage. The crafter's normal extraction
+     * loop only takes what an order wants, so anything else piles up until it blocks the machine: a byproduct, but
+     * equally a second <b>product</b> of a recipe whose other product was the one requested (one iron into a lathe
+     * gives a rod and two dust; ask for rods and the dust fills its output slot after 32 crafts).
+     * <p>
+     * Role has no bearing on this. What matters is only whether an order is waiting for the item, in which case it is
+     * left for that order.
+     */
+    private void drainUnorderedOutputs() {
+        // Only while this module has a job of its own. With nothing ordered there is no craft of ours to keep running,
+        // so anything in the machine is the player's (a set handed over by "Request set", something they put there) and
+        // is left alone. Clearing an idle machine is the Cleanup checkbox's job, not this.
+        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
+            return;
+        }
+        IInventory inv = null;
+        int stacks = 0;
+        for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (output == null || outstandingResults(output) > 0) {
+                continue;
+            }
+            if (inv == null) {
+                MachineClaims.Key machine = machineKey();
+                inv = _service.getRealInventory();
+                if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
+                    return;
+                }
+            }
+            stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
+        }
+        if (stacks > 0) {
+            _service.getCacheHolder().trigger(CacheTypes.Inventory);
+        }
     }
 
     @Override
@@ -152,29 +637,6 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         gateDirty = true;
     }
 
-    /**
-     * Checks the machine for results at the normal crafter's rate while results keep coming out, and backs off (up to
-     * {@link #MAX_CHECK_TICKS}) while they don't, so a long recipe isn't polled several times a second. Skipped while
-     * no sets are in the machine, since nothing can come out. Without orders the normal rate is kept, for the cleanup
-     * upgrade.
-     */
-    @Override
-    protected boolean shouldCheckMachine() {
-        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
-            return super.shouldCheckMachine();
-        }
-        if (setsReleased == 0) {
-            return false;
-        }
-        if (--checkCountdown > 0) {
-            return false;
-        }
-        // Assume this check finds nothing; onResultExtracted resets the interval if it does.
-        checkInterval = Math.min(checkInterval * 2, MAX_CHECK_TICKS);
-        checkCountdown = checkInterval;
-        return true;
-    }
-
     @Override
     public LogisticsItemOrder fullFill(LogisticsPromise promise, IRequestItems destination,
             IAdditionalTargetInformation info) {
@@ -183,22 +645,51 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         return order;
     }
 
+    /**
+     * Counts a set as finished from whichever output turns up.
+     * <p>
+     * A set yields every output at once, so the outputs are alternative views of the same progress, not separate
+     * progress to add up: the set count is the <b>largest</b> any one output implies. Taking the largest also keeps a
+     * chanced output from holding the count back, since a guaranteed one overtakes it.
+     */
     @Override
     protected void onResultExtracted(ItemIdentifier item, int amount) {
-        ItemIdentifierStack result = getConfiguredCraftResult();
-        if (result == null || result.getStackSize() <= 0 || !isOurResult(item, result)) {
+        int output = outputIndexFor(item);
+        if (output < 0) {
             return;
         }
-        checkInterval = MIN_CHECK_TICKS;
-        checkCountdown = MIN_CHECK_TICKS;
-        resultRemainder += amount;
-        int finished = resultRemainder / result.getStackSize();
-        resultRemainder %= result.getStackSize();
-        if (finished > 0) {
-            setsReleased = Math.max(0, setsReleased - finished);
+        extractedPerOutput[output] += amount;
+        int finished = 0;
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack stack = getOutput(i);
+            if (stack != null && stack.getStackSize() > 0) {
+                finished = Math.max(finished, extractedPerOutput[i] / stack.getStackSize());
+            }
+        }
+        if (finished > creditedSets) {
+            setsReleased = Math.max(0, setsReleased - (finished - creditedSets));
+            creditedSets = finished;
             gateDirty = true;
         }
         lastProgressTick = now();
+    }
+
+    private void clearResultProgress() {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            extractedPerOutput[i] = 0;
+        }
+        creditedSets = 0;
+    }
+
+    /** Which output slot an extracted item belongs to, or -1 if it isn't one of this recipe's results. */
+    private int outputIndexFor(ItemIdentifier item) {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (output != null && output.getStackSize() > 0 && isOurResult(item, output)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Override
@@ -258,13 +749,32 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
 
     private void updateGate() {
         gateDirty = false;
-        ItemIdentifierStack result = getConfiguredCraftResult();
-        if (result == null || result.getStackSize() <= 0) {
+        if (getConfiguredCraftResult() == null) {
             resetGate();
             return;
         }
-        int outstanding = outstandingResults(result);
-        if (outstanding <= 0) {
+        // Sets needed for whichever product is furthest behind: one set yields every output at once, so ordering two
+        // of this recipe's products needs the larger of the two set counts, not their sum.
+        int setsNeeded = 0;
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (outputRole[i] != OutputRole.PRODUCT || output == null || output.getStackSize() <= 0) {
+                continue;
+            }
+            int outstandingForOutput = outstandingResults(output);
+            if (outstandingForOutput > 0) {
+                setsNeeded = Math
+                        .max(setsNeeded, (outstandingForOutput + output.getStackSize() - 1) / output.getStackSize());
+            }
+        }
+        // Sets asked for by the "Request set" button have no order behind them, so they are counted here instead.
+        int wanted = setsNeeded + pendingManualSets;
+        if (wanted <= 0) {
+            if (deliveryInProgress()) {
+                // A set is still on its way (a manual one, or the tail of a finished job). Resetting now would zero
+                // the allowance mid-delivery and strand it in storage.
+                return;
+            }
             if (pendingLoadSweep) {
                 // Retried on the next update if the machine isn't reachable yet or another crafter is using it.
                 pendingLoadSweep = !sweepMachine();
@@ -279,12 +789,12 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             resetGate();
             return;
         }
-        hadOrders = true;
+        // Only an ordered job counts, so the end-of-job sweep above never fires for a set handed over by hand.
+        hadOrders |= setsNeeded > 0;
         pendingLoadSweep = false; // the pre-craft sweep below covers it
         giveUpStuckSets();
 
-        int setsNeeded = (outstanding + result.getStackSize() - 1) / result.getStackSize();
-        int toRelease = Math.min(setsNeeded, MAX_SETS_IN_FLIGHT) - setsReleased;
+        int toRelease = Math.min(wanted, MAX_SETS_IN_FLIGHT) - setsReleased;
         if (toRelease > 0 && mayReleaseSets()) {
             if (sweepBeforeRelease) {
                 // First release since taking the machine: anything of this recipe still in it is stale (left over from
@@ -340,17 +850,16 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     }
 
     private void releaseSets(int sets) {
-        if (setsReleased == 0) {
-            // Nothing was in the machine, so result checks may have backed off; start again at the normal rate.
-            checkInterval = MIN_CHECK_TICKS;
-            checkCountdown = MIN_CHECK_TICKS;
-        }
+        int manual = Math.min(sets, pendingManualSets);
+        pendingManualSets -= manual;
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 allowance[slot] += sets * getMaterials(slot).getStackSize();
             }
         }
-        setsReleased += sets;
+        // A set from "Request set" is finished once its ingredients are delivered: it exists to hand the machine one
+        // more set, so no result is expected and none is taken back out. Only ordered sets are counted as in flight.
+        setsReleased += sets - manual;
         releasedThisTurn = true;
         lastProgressTick = now();
     }
@@ -374,7 +883,23 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             return;
         }
         setsReleased = 0;
-        resultRemainder = 0;
+        clearResultProgress();
+    }
+
+    /**
+     * Whether ingredients are still granted but unsent, or sent and not yet arrived. Bounded by {@link #STUCK_TICKS} so
+     * a provider that never delivers can't hold the gate open for good.
+     */
+    private boolean deliveryInProgress() {
+        if (now() - lastProgressTick >= STUCK_TICKS) {
+            return false;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (allowance[slot] > 0 || inFlight[slot] > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean nothingInFlight() {
@@ -392,7 +917,8 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             inFlight[slot] = 0;
         }
         setsReleased = 0;
-        resultRemainder = 0;
+        pendingManualSets = 0;
+        clearResultProgress();
         setTooLarge = false;
         releaseClaim();
         stopWaiting();
@@ -568,6 +1094,9 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
      * @return false if the machine couldn't be swept right now (not reachable, or in use by another crafter)
      */
     private boolean sweepMachine() {
+        if (!cleanupEnabled) {
+            return true; // nothing to retry
+        }
         IInventory inv = _service.getRealInventory();
         MachineClaims.Key machine = machineKey();
         if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
@@ -583,11 +1112,24 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
 
     /** @return how many stacks were taken out */
     private int sweepResult(IInventory inv) {
-        ItemIdentifierStack result = getConfiguredCraftResult();
-        if (result == null) {
-            return 0;
+        int stacks = 0;
+        for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (output != null) {
+                stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
+            }
         }
-        ItemIdentifier item = result.getItem();
+        return stacks;
+    }
+
+    /**
+     * Pulls an item out of the machine through its normal extraction rules and sends it to storage. Only the machine's
+     * output slots are touched: some machines keep a player-set copy of the result elsewhere (e.g. the auto-chisel's
+     * target slot), which must stay.
+     *
+     * @return how many stacks were taken out
+     */
+    private int takeOut(IInventory inv, ItemIdentifier item, int maxStacks) {
         IInventory extractable = inv instanceof ISidedInventory
                 ? new SidedInventoryMinecraftAdapter((ISidedInventory) inv, ForgeDirection.UNKNOWN, true)
                 : inv;
@@ -595,7 +1137,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
                 .getInventoryUtil(extractable, _service.inventoryOrientation());
         int stacks = 0;
         int left = util.itemCount(item);
-        while (left > 0 && stacks < MAX_SWEEP_STACKS) {
+        while (left > 0 && stacks < maxStacks) {
             ItemStack taken = util.getMultipleItems(item, Math.min(left, item.getMaxStackSize()));
             if (taken == null || taken.stackSize <= 0) {
                 break;

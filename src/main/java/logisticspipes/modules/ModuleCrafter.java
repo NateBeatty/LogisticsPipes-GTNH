@@ -385,13 +385,24 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 }
             }
         }
-        remaining -= root.getAllPromissesFor(this, getConfiguredCraftResult().getItem());
+        // The result that was asked for, which is not always the first one: a module with several results answers for
+        // any of them.
+        ItemIdentifierStack result = null;
+        for (ItemIdentifierStack candidate : getConfiguredCraftResults()) {
+            if (candidate != null && requestedItem.matches(candidate.getItem(), IResource.MatchSettings.NORMAL)) {
+                result = candidate;
+                break;
+            }
+        }
+        if (result == null) {
+            return;
+        }
+        remaining -= root.getAllPromissesFor(this, result.getItem());
         if (remaining < 1) {
             return;
         }
         if (this.getUpgradeManager().isFuzzyUpgrade() && outputFuzzyFlags.getBitSet().nextSetBit(0) != -1) {
-            DictResource dict = new DictResource(getConfiguredCraftResult(), null)
-                    .loadFromBitSet(outputFuzzyFlags.getBitSet());
+            DictResource dict = new DictResource(result, null).loadFromBitSet(outputFuzzyFlags.getBitSet());
             LogisticsExtraDictPromise promise = new LogisticsExtraDictPromise(
                     dict,
                     Math.min(remaining, tree.getMissingAmount()),
@@ -400,7 +411,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             tree.addPromise(promise);
         } else {
             LogisticsExtraPromise promise = new LogisticsExtraPromise(
-                    getConfiguredCraftResult().getItem(),
+                    result.getItem(),
                     Math.min(remaining, tree.getMissingAmount()),
                     this,
                     true);
@@ -507,7 +518,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         if (!hasSatellite) {
             return null;
         }
-        if (!getUpgradeManager().isAdvancedSatelliteCrafter()) {
+        if (!usesPerSlotSatellites()) {
             if (satelliteId != 0) {
                 IRouter r = getSatelliteRouter(-1);
                 if (r != null) {
@@ -578,11 +589,26 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             template.addIngredient(new FluidResource(liquid, amount, liquidTarget[i]), null);
         }
 
+        addTemplateByproducts(template);
+
+        return template;
+    }
+
+    /**
+     * Registers the results this module produces on the side, which the planner may spend within the same request but
+     * never starts a craft for.
+     */
+    protected void addTemplateByproducts(IReqCraftingTemplate template) {
         if (getUpgradeManager().hasByproductExtractor() && getByproductItem() != null) {
             template.addByproduct(getByproductItem());
         }
+    }
 
-        return template;
+    /**
+     * Whether every ingredient slot has its own satellite id. Otherwise one id covers slots 6-8.
+     */
+    protected boolean usesPerSlotSatellites() {
+        return getUpgradeManager().isAdvancedSatelliteCrafter();
     }
 
     protected ISlotUpgradeManager getUpgradeManager() {
@@ -594,7 +620,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     public boolean isSatelliteConnected() {
         final List<ExitRoute> routes = getRouter().getIRoutersByCost();
-        if (!getUpgradeManager().isAdvancedSatelliteCrafter()) {
+        if (!usesPerSlotSatellites()) {
             if (satelliteId == 0) {
                 return true;
             }
