@@ -1,13 +1,16 @@
 package logisticspipes.logisticspipes;
 
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.FluidStack;
 
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
+import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.item.ItemIdentifier;
+import logisticspipes.utils.item.ItemIdentifierStack;
 
 public class ChassiTransportLayer extends TransportLayer {
 
@@ -62,6 +65,15 @@ public class ChassiTransportLayer extends TransportLayer {
         if (!_chassiPipe.isEnabled()) {
             _chassiPipe.notifyOfItemArival(item.getInfo());
             return false;
+        }
+        // Fluid addressed to a module here. No module sinks a fluid container as an item, so without this the chassis
+        // would turn it away and it would never reach the module that asked for it.
+        ItemIdentifierStack stack = item.getItemIdentifierStack();
+        if (stack != null && stack.getItem().isFluidContainer()) {
+            FluidStack fluid = SimpleServiceLocator.logisticsFluidManager.getFluidFromContainer(stack);
+            if (fluid != null && _chassiPipe.wantsFluid(fluid)) {
+                return true;
+            }
         }
         SinkReply reply = module.sinksItem(item.getItemIdentifierStack().getItem(), -1, 0, true, false);
         if (reply == null || reply.maxNumberOfItems < 0) {

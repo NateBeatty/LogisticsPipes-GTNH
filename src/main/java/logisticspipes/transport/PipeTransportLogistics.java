@@ -22,6 +22,7 @@ import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.FluidStack;
 
 import buildcraft.transport.TravelingItem;
 import logisticspipes.LPConstants;
@@ -34,6 +35,7 @@ import logisticspipes.interfaces.IItemAdvancedExistance;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.ISpecialInsertion;
 import logisticspipes.interfaces.ISubSystemPowerProvider;
+import logisticspipes.interfaces.routing.IFluidContainerReceiver;
 import logisticspipes.interfaces.routing.ITargetSlotInformation;
 import logisticspipes.logisticspipes.IRoutedItem;
 import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
@@ -495,6 +497,19 @@ public class PipeTransportLogistics {
                 return;
             }
         }
+        // A pipe that isn't a fluid pipe but was addressed as a fluid destination. Must come before the inventory
+        // insertion below: LP's fluid container can't exist in an inventory, so it would simply be destroyed there.
+        if (MainProxy.isServer(getWorld()) && getPipe() instanceof IFluidContainerReceiver
+                && arrivingItem.getItemIdentifierStack() != null
+                && arrivingItem.getItemIdentifierStack().getItem().isFluidContainer()
+                && isRouted
+                && getRoutedPipe().getRouter().getSimpleID() == arrivingItem.getDestination()) {
+            FluidStack liquid = SimpleServiceLocator.logisticsFluidManager
+                    .getFluidFromContainer(arrivingItem.getItemIdentifierStack());
+            if (liquid != null && ((IFluidContainerReceiver) getPipe()).receiveFluidContainer(liquid)) {
+                return;
+            }
+        }
         boolean isSpecialConnectionInformationTransition = false;
         if (MainProxy.isServer(getWorld())) {
             if (SimpleServiceLocator.specialtileconnection.needsInformationTransition(tile)) {
@@ -656,6 +671,16 @@ public class PipeTransportLogistics {
     protected boolean isItemExitable(ItemIdentifierStack itemIdentifierStack) {
         if (itemIdentifierStack != null
                 && itemIdentifierStack.makeNormalStack().getItem() instanceof IItemAdvancedExistance) {
+            // A fluid container may leave toward a block this pipe pours fluid into, even though it could never be
+            // inserted there as an item: handleTileReachedServer empties it before the inventory path is reached.
+            // Fluid pipes get here by overriding this outright; a chassis only lets through fluid it asked for.
+            if (itemIdentifierStack.getItem().isFluidContainer() && getPipe() instanceof IFluidContainerReceiver) {
+                FluidStack fluid = SimpleServiceLocator.logisticsFluidManager
+                        .getFluidFromContainer(itemIdentifierStack);
+                if (fluid != null && ((IFluidContainerReceiver) getPipe()).wantsFluid(fluid)) {
+                    return true;
+                }
+            }
             return ((IItemAdvancedExistance) itemIdentifierStack.makeNormalStack().getItem())
                     .canExistInNormalInventory(itemIdentifierStack.makeNormalStack());
         }

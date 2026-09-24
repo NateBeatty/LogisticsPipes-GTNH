@@ -412,8 +412,9 @@ gui.smartcrafter.Off=Off
 gui.smartcrafter.PRODUCT=Product
 gui.smartcrafter.BYPRODUCT=Byproduct
 gui.smartcrafter.BYPRODUCT_COUNTED=Byproduct+
-gui.smartcrafter.tooltip.InputSatellite=Satellite ID this ingredient is sent to. Off = this module's own machine.
+gui.smartcrafter.tooltip.InputSatellite=Satellite ID this ingredient is sent to. Off = this module's own machine, fluids included.
 gui.smartcrafter.tooltip.OutputSatellite=Satellite ID this result comes out of. Not used yet - every result is taken from this module's own machine.
+gui.smartcrafter.tooltip.Fluid=Middle click a fluid to set how much the recipe takes, in L.
 gui.smartcrafter.tooltip.Chance=Percent chance of getting this result from one set. Below 100 it cannot be counted as a planned extra.
 gui.smartcrafter.status.0=Crafting
 gui.smartcrafter.status.1=Idle
@@ -422,6 +423,7 @@ gui.smartcrafter.status.3=No machine in front of this module
 gui.smartcrafter.status.4=A recipe set does not fit: machine full, too small, or refusing input from this side
 gui.smartcrafter.status.5=Waiting for another crafter to release the machine
 gui.smartcrafter.status.6=Waiting for ingredients
+gui.smartcrafter.status.7=A fluid ingredient has nowhere to go - set a fluid satellite, or face a block that holds fluid
 
 gui.firewall.Blocked=Blocked
 gui.firewall.Allowed=Allowed

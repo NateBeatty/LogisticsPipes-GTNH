@@ -9,17 +9,21 @@ import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.ISidedInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IIcon;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
+import net.minecraftforge.fluids.IFluidHandler;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
+import logisticspipes.interfaces.routing.IFluidContainerReceiver;
 import logisticspipes.interfaces.routing.IGatedItemSink;
+import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.network.NewGuiHandler;
 import logisticspipes.network.PacketHandler;
@@ -30,18 +34,23 @@ import logisticspipes.network.guis.module.inhand.SmartCrafterInHand;
 import logisticspipes.network.guis.module.inpipe.SmartCrafterModuleSlot;
 import logisticspipes.network.packets.cpipe.SmartCrafterSetting;
 import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
+import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.IReqCraftingTemplate;
 import logisticspipes.request.RequestTree;
 import logisticspipes.request.resources.DictResource;
+import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
+import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.utils.CacheHolder.CacheTypes;
+import logisticspipes.utils.FluidDisplayUtil;
+import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
@@ -62,7 +71,8 @@ import lombok.Getter;
  * one machine take turns instead of mixing their ingredients. When another crafter is waiting, the owner stops
  * releasing new sets, lets the ones in the machine finish and hands the machine over.
  */
-public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink {
+public class ModuleSmartCrafter extends ModuleCrafter
+        implements IGatedItemSink, IRequestFluid, IFluidContainerReceiver {
 
     private static final int INGREDIENT_SLOTS = 9;
     /** Result slots, each with its own {@link OutputRole}. They follow the ingredient slots in the inventory. */
@@ -114,6 +124,14 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     private boolean sweepBeforeRelease = false;
     /** Sets asked for through the gui's "Request set" button, which have no order behind them. */
     private int pendingManualSets = 0;
+
+    /**
+     * Litres per ingredient slot, the unit GT recipes and NEI use. Above zero means the slot holds a fluid rather than
+     * an item, which is the only thing that tells the two apart: a filled cell is a real item a recipe may want as one.
+     */
+    private final int[] fluidAmount = new int[INGREDIENT_SLOTS];
+    /** Used when a fluid is dropped in without an amount of its own. One bucket, as GT recipes are written. */
+    private static final int DEFAULT_FLUID_AMOUNT = 1000;
     /** Master switch for the built-in sweeps. Off leaves whatever is in the machine alone. */
     private boolean cleanupEnabled = true;
 
@@ -167,10 +185,218 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
                 INVENTORY_SIZE,
                 StringUtils.translate("gui.module.requestedItems"),
                 127);
+        // Needed to catch a fluid dropped into an ingredient slot; the base only registers this for the crafting pipe.
+        _dummyInventory.addListener(this);
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
             outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
             outputChance[i] = GUARANTEED;
         }
+    }
+
+    /* Fluid ingredients */
+
+    /**
+     * Takes fluid addressed to this module and pours it into the machine it faces, so a fluid ingredient needs no
+     * satellite. Possible because LP moves fluid as an ordinary routed item holding a container: only the receiving end
+     * is particular to fluid pipes, and this is that end.
+     *
+     * @return true if this module wanted the fluid. Whatever the machine couldn't take is sent back into the network,
+     *         where LP routes a stray container to the nearest fluid sink.
+     */
+    @Override
+    public boolean receiveFluidContainer(FluidStack fluid) {
+        if (fluid == null || fluid.amount <= 0 || !wantsFluid(fluid)) {
+            return false;
+        }
+        IFluidHandler tank = facedTank();
+        int filled = tank == null ? 0 : tank.fill(insertionSide(), fluid, true);
+        if (filled < fluid.amount) {
+            FluidStack rejected = fluid.copy();
+            rejected.amount = fluid.amount - filled;
+            sendFluidBack(rejected);
+        }
+        lastProgressTick = now();
+        return true;
+    }
+
+    /** Whether a fluid slot asks for this fluid and has no satellite, i.e. it is delivered to this module's machine. */
+    @Override
+    public boolean wantsFluid(FluidStack fluid) {
+        FluidIdentifier arriving = FluidIdentifier.get(fluid);
+        if (arriving == null) {
+            return false;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isFluidSlot(slot) && advancedSatelliteIdArray[slot] == 0 && arriving.equals(getFluidIngredient(slot))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Puts fluid back on the network with no destination, which sends it to the nearest fluid sink. */
+    private void sendFluidBack(FluidStack fluid) {
+        ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(fluid);
+        if (container != null) {
+            _service.queueRoutedItem(
+                    SimpleServiceLocator.routedItemHelper.createNewTravelItem(container.makeNormalStack()),
+                    ForgeDirection.UP);
+        }
+    }
+
+    @Override
+    public void sendFailed(FluidIdentifier value1, Integer value2) {
+        // A delivery that never arrived. Nothing is reserved for fluids, so the next gate update simply asks again.
+        gateDirty = true;
+    }
+
+    /** Whether this ingredient slot holds a fluid. Fluids are delivered to a fluid satellite, never to the chassis. */
+    public boolean isFluidSlot(int slot) {
+        return fluidAmount[slot] > 0 && getFluidIngredient(slot) != null;
+    }
+
+    public FluidIdentifier getFluidIngredient(int slot) {
+        ItemIdentifierStack stack = getMaterials(slot);
+        return stack == null ? null : FluidIdentifier.get(stack.getItem());
+    }
+
+    public int getFluidAmount(int slot) {
+        return fluidAmount[slot];
+    }
+
+    public void setFluidAmount(int slot, int litres) {
+        fluidAmount[slot] = Math.max(0, litres);
+        gateDirty = true;
+    }
+
+    /**
+     * Turns a dropped fluid display stack into the fluid it stands for. A real item, a filled cell included, is left as
+     * an item: plenty of GT recipes take a cell as an ingredient, and second-guessing that would make those
+     * unconfigurable.
+     */
+    @Override
+    public void InventoryChanged(IInventory inventory) {
+        super.InventoryChanged(inventory);
+        if (normalising || inventory != _dummyInventory || _world == null || !MainProxy.isServer(getWorld())) {
+            return;
+        }
+        normalising = true; // rewriting a slot below calls back in here
+        try {
+            normaliseFluidSlots();
+        } finally {
+            normalising = false;
+        }
+    }
+
+    private boolean normalising = false;
+
+    private void normaliseFluidSlots() {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            ItemIdentifierStack stack = getMaterials(slot);
+            if (stack == null) {
+                fluidAmount[slot] = 0;
+                continue;
+            }
+            FluidStack dropped = FluidDisplayUtil.getDisplayedFluid(stack.getItem().unsafeMakeNormalStack(1));
+            if (dropped == null) {
+                // A plain item. Any amount left over from a fluid that used to be here no longer applies.
+                fluidAmount[slot] = 0;
+                continue;
+            }
+            FluidIdentifier fluid = FluidIdentifier.get(dropped);
+            if (fluid == null) {
+                fluidAmount[slot] = 0;
+                continue;
+            }
+            // Store it the way LP represents a fluid, so the slot renders and saves like any other.
+            _dummyInventory.setInventorySlotContents(slot, fluid.getItemIdentifier().unsafeMakeNormalStack(1));
+            if (fluidAmount[slot] <= 0) {
+                fluidAmount[slot] = dropped.amount > 0 ? dropped.amount : DEFAULT_FLUID_AMOUNT;
+            }
+        }
+    }
+
+    @Override
+    protected boolean addIngredientForSlot(IReqCraftingTemplate template, int slot) {
+        if (!isFluidSlot(slot)) {
+            return false;
+        }
+        // With no satellite set the fluid comes to this module, which pours it into the machine it faces.
+        IRequestFluid target = advancedSatelliteIdArray[slot] == 0 ? this : fluidSatelliteFor(slot);
+        if (target != null) {
+            template.addIngredient(new FluidResource(getFluidIngredient(slot), fluidAmount[slot], target), null);
+        }
+        // Either way the item path must not also add it. An unreachable satellite is caught by isSatelliteConnected,
+        // which stops the template being offered at all, rather than quietly crafting without the fluid.
+        return true;
+    }
+
+    /** The fluid satellite an ingredient slot is routed to, or null if its id is unset or can't be reached. */
+    private IRequestFluid fluidSatelliteFor(int slot) {
+        int id = advancedSatelliteIdArray[slot];
+        if (id == 0) {
+            return null;
+        }
+        for (PipeFluidSatellite satellite : PipeFluidSatellite.AllSatellites) {
+            if (satellite.satelliteId != id || satellite.stillNeedReplace() || satellite.getRouter() == null) {
+                continue;
+            }
+            if (isReachable(satellite.getRouter())) {
+                return satellite;
+            }
+        }
+        return null;
+    }
+
+    private boolean isReachable(IRouter router) {
+        for (ExitRoute route : getRouter().getIRoutersByCost()) {
+            if (route.destination == router) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A fluid can't be delivered to the chassis, so every fluid slot needs a satellite that can be reached. Without one
+     * the module stops offering the recipe, instead of crafting without the fluid.
+     */
+    @Override
+    public boolean isSatelliteConnected() {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (getMaterials(slot) == null) {
+                continue;
+            }
+            if (isFluidSlot(slot)) {
+                // No id means this module takes the fluid itself, so there is nothing to reach.
+                if (advancedSatelliteIdArray[slot] != 0 && fluidSatelliteFor(slot) == null) {
+                    return false;
+                }
+            } else if (advancedSatelliteIdArray[slot] != 0) {
+                IRouter router = getSatelliteRouter(slot);
+                if (router == null || !isReachable(router)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The first fluid slot that has nowhere to go: either it names a satellite that can't be reached, or it names none
+     * and the block this module faces holds no fluid. -1 when every fluid slot is fine. Drives the gui warning.
+     */
+    public int fluidSlotWithNowhereToGo() {
+        boolean facesTank = facedTank() != null;
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isFluidSlot(slot)) {
+                continue;
+            }
+            if (advancedSatelliteIdArray[slot] == 0 ? !facesTank : fluidSatelliteFor(slot) == null) {
+                return slot;
+            }
+        }
+        return -1;
     }
 
     /* Outputs */
@@ -299,7 +525,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
             chances[i] = outputChance[i];
         }
         packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
-                .setCleanupEnabled(cleanupEnabled)
+                .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled)
                 .setStatus(MainProxy.isServer(getWorld()) ? computeStatus() : lastStatus).setSetsReleased(setsReleased);
         packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
                 .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
@@ -312,6 +538,10 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         int[] roles = packet.getOutputRole();
         int[] chances = packet.getOutputChance();
         int[] satellites = packet.getOutputSatelliteId();
+        int[] fluids = packet.getFluidAmount();
+        for (int i = 0; i < INGREDIENT_SLOTS && i < fluids.length; i++) {
+            fluidAmount[i] = Math.max(0, fluids[i]);
+        }
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
             if (i < roles.length && roles[i] >= 0 && roles[i] < OutputRole.values().length) {
                 outputRole[i] = OutputRole.values()[roles[i]];
@@ -342,6 +572,11 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
                 if (index >= 0 && index < INGREDIENT_SLOTS) {
                     advancedSatelliteIdArray[index] = Math.max(0, value);
                     gateDirty = true;
+                }
+                return;
+            case SmartCrafterSetting.FLUID_AMOUNT:
+                if (index >= 0 && index < INGREDIENT_SLOTS) {
+                    setFluidAmount(index, value);
                 }
                 return;
             case SmartCrafterSetting.OUTPUT_SATELLITE:
@@ -389,10 +624,14 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     public static final int STATUS_SET_TOO_LARGE = 4;
     public static final int STATUS_WAITING_CLAIM = 5;
     public static final int STATUS_HOLDING = 6;
+    public static final int STATUS_FLUID_NO_SATELLITE = 7;
 
     public int computeStatus() {
         if (hasNoCraftableOutput()) {
             return STATUS_NO_PRODUCT;
+        }
+        if (fluidSlotWithNowhereToGo() >= 0) {
+            return STATUS_FLUID_NO_SATELLITE;
         }
         if (_service == null || _service.getRealInventory() == null) {
             return STATUS_NO_MACHINE;
@@ -495,6 +734,10 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         int[] roles = nbttagcompound.getIntArray("SmartOutputRole");
         int[] chances = nbttagcompound.getIntArray("SmartOutputChance");
         int[] satellites = nbttagcompound.getIntArray("SmartOutputSatellite");
+        int[] fluids = nbttagcompound.getIntArray("SmartFluidAmount");
+        for (int i = 0; i < INGREDIENT_SLOTS && i < fluids.length; i++) {
+            fluidAmount[i] = Math.max(0, fluids[i]);
+        }
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
             if (i < roles.length && roles[i] >= 0 && roles[i] < OutputRole.values().length) {
                 outputRole[i] = OutputRole.values()[roles[i]];
@@ -520,6 +763,7 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         nbttagcompound.setIntArray("SmartOutputRole", roles);
         nbttagcompound.setIntArray("SmartOutputChance", chances);
         nbttagcompound.setIntArray("SmartOutputSatellite", outputSatelliteId);
+        nbttagcompound.setIntArray("SmartFluidAmount", fluidAmount);
         nbttagcompound.setBoolean("SmartCleanup", cleanupEnabled);
     }
 
@@ -527,6 +771,24 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     public void handleAdvancedNEIRecipePacket(List<ItemStack> inputs, List<ItemStack> outputs,
             List<FluidStack> fluidInputs, EntityPlayer player) {
         super.handleAdvancedNEIRecipePacket(inputs, outputs, fluidInputs, player);
+        // The base puts fluids in the upgrade's separate fluid inventory, which this module doesn't have: here a fluid
+        // is an ingredient slot like any other, so they follow the items into the grid.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            fluidAmount[slot] = 0;
+        }
+        int slot = inputs.size();
+        for (FluidStack fluid : fluidInputs) {
+            if (slot >= INGREDIENT_SLOTS) {
+                break;
+            }
+            FluidIdentifier ident = fluid == null ? null : FluidIdentifier.get(fluid);
+            if (ident == null) {
+                continue;
+            }
+            _dummyInventory.setInventorySlotContents(slot, ident.getItemIdentifier().unsafeMakeNormalStack(1));
+            fluidAmount[slot] = fluid.amount > 0 ? fluid.amount : DEFAULT_FLUID_AMOUNT;
+            slot++;
+        }
         // The base only fills two result slots, and the second one as the upgrade's byproduct slot.
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
             _dummyInventory
@@ -944,6 +1206,16 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
     }
 
     /** The block the chassis faces, which is where this module's ingredients go. */
+    /** The tank of the block this module faces, or null when it doesn't hold fluid. */
+    private IFluidHandler facedTank() {
+        ForgeDirection dir = _service == null ? null : _service.inventoryOrientation();
+        if (dir == null || dir == ForgeDirection.UNKNOWN || getWorld() == null) {
+            return null;
+        }
+        TileEntity tile = getWorld().getTileEntity(getX() + dir.offsetX, getY() + dir.offsetY, getZ() + dir.offsetZ);
+        return tile instanceof IFluidHandler ? (IFluidHandler) tile : null;
+    }
+
     private MachineClaims.Key machineKey() {
         ForgeDirection dir = _service.inventoryOrientation();
         if (dir == null || dir == ForgeDirection.UNKNOWN || getWorld() == null) {
@@ -995,6 +1267,9 @@ public class ModuleSmartCrafter extends ModuleCrafter implements IGatedItemSink 
         ItemIdentifierStack material = getMaterials(slot);
         if (material == null || material.getStackSize() <= 0) {
             return false;
+        }
+        if (isFluidSlot(slot)) {
+            return false; // goes to a fluid satellite, never into this module's machine
         }
         ISlotUpgradeManager upgrades = getUpgradeManager();
         if (upgrades.isAdvancedSatelliteCrafter()) {

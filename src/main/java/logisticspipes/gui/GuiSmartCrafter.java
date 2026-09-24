@@ -7,14 +7,21 @@ import java.util.List;
 
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
+import net.minecraft.client.renderer.texture.TextureMap;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.util.EnumChatFormatting;
+import net.minecraft.util.IIcon;
+import net.minecraftforge.fluids.FluidStack;
+
+import org.lwjgl.opengl.GL11;
 
 import logisticspipes.gui.modules.ModuleBaseGui;
+import logisticspipes.gui.popup.GuiFluidAmountPopup;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.modules.ModuleSmartCrafter.OutputRole;
 import logisticspipes.network.packets.cpipe.SmartCrafterSetting;
+import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.gui.DummyContainer;
 import logisticspipes.utils.gui.GuiCheckBox;
 import logisticspipes.utils.gui.GuiGraphics;
@@ -230,6 +237,30 @@ public class GuiSmartCrafter extends ModuleBaseGui {
         }
     }
 
+    /** The ingredient slot under the cursor, or -1. */
+    private int ingredientSlotAt(int mouseX, int mouseY) {
+        for (int slot = 0; slot < 9; slot++) {
+            int left = guiLeft + INPUT_COL_X[slot % 3];
+            int top = guiTop + ROW_Y[slot / 3];
+            if (mouseX >= left && mouseX < left + 18 && mouseY >= top && mouseY < top + 18) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    private void openAmountPopup(int slot) {
+        FluidIdentifier fluid = crafter.getFluidIngredient(slot);
+        if (fluid == null) {
+            return;
+        }
+        setSubGui(
+                new GuiFluidAmountPopup(
+                        fluid.getName(),
+                        crafter.getFluidAmount(slot),
+                        amount -> crafter.sendSetting(SmartCrafterSetting.FLUID_AMOUNT, slot, amount)));
+    }
+
     /** Every entry box, in one list, so clicks and keys reach all of them. */
     private List<GuiNumberField> entryFields() {
         List<GuiNumberField> fields = new ArrayList<>();
@@ -241,6 +272,14 @@ public class GuiSmartCrafter extends ModuleBaseGui {
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int button) {
+        if (button == 2) {
+            int slot = ingredientSlotAt(mouseX, mouseY);
+            // Middle click sets how much of a fluid the recipe takes; an item slot carries its amount as a stack size.
+            if (slot >= 0 && crafter.isFluidSlot(slot)) {
+                openAmountPopup(slot);
+                return;
+            }
+        }
         boolean taken = false;
         for (GuiNumberField field : entryFields()) {
             taken |= field.mouseClicked(mouseX, mouseY, guiLeft, guiTop);
@@ -325,6 +364,12 @@ public class GuiSmartCrafter extends ModuleBaseGui {
             satelliteFields[slot].setValue(crafter.advancedSatelliteIdArray[slot]);
             satelliteFields[slot].setEnabled(crafter.getMaterials(slot) != null);
             satelliteFields[slot].draw(mc, 0, 0);
+            if (crafter.isFluidSlot(slot)) {
+                // LP's fluid item is one flat icon whatever the fluid, so the fluid's own texture goes over the top:
+                // a fluid in a recipe should look like the fluid, the way GT shows it.
+                drawFluidIcon(crafter.getFluidIngredient(slot), INPUT_COL_X[slot % 3], ROW_Y[slot / 3]);
+                drawFluidAmount(crafter.getFluidAmount(slot), INPUT_COL_X[slot % 3], ROW_Y[slot / 3]);
+            }
         }
         for (int out = 0; out < ModuleSmartCrafter.OUTPUT_SLOTS; out++) {
             boolean used = crafter.getOutput(out) != null;
@@ -359,6 +404,71 @@ public class GuiSmartCrafter extends ModuleBaseGui {
         mc.fontRenderer.drawString(sets, PRIORITY_LABEL_X + 20, ACTION_ROW_Y + 1, 0x808080);
 
         drawStatus();
+    }
+
+    /**
+     * Draws a fluid's own texture into a 16x16 slot, tinted the way the fluid is drawn in the world. Coordinates are
+     * gui-relative, since the foreground layer is drawn under the gui's translation, and it runs after the slots so
+     * this covers the placeholder item LP stores the fluid as.
+     */
+    private void drawFluidIcon(FluidIdentifier fluid, int x, int y) {
+        if (fluid == null) {
+            return;
+        }
+        FluidStack stack = fluid.makeFluidStack(1000);
+        if (stack.getFluid() == null) {
+            return;
+        }
+        IIcon icon = stack.getFluid().getStillIcon();
+        if (icon == null) {
+            icon = stack.getFluid().getIcon();
+        }
+        if (icon == null) {
+            return;
+        }
+        int colour = stack.getFluid().getColor(stack);
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glEnable(GL11.GL_BLEND);
+        // Slot items are drawn at zLevel 100 with the depth test on, so a quad at zLevel 0 would land behind them.
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        float oldZ = zLevel;
+        zLevel = 200F;
+        mc.renderEngine.bindTexture(TextureMap.locationBlocksTexture);
+        GL11.glColor4f(((colour >> 16) & 0xFF) / 255F, ((colour >> 8) & 0xFF) / 255F, (colour & 0xFF) / 255F, 1F);
+        drawTexturedModelRectFromIcon(x, y, icon, 16, 16);
+        zLevel = oldZ;
+        GL11.glColor4f(1F, 1F, 1F, 1F);
+        GL11.glDisable(GL11.GL_BLEND);
+        GL11.glEnable(GL11.GL_DEPTH_TEST);
+    }
+
+    /**
+     * Draws the amount over a fluid slot the way GT draws its own: half scale, white, with a shadow, in the bottom
+     * right corner. The placement is GT's formula from {@code RecipeMapFrontend.drawNEIOverlayText} with
+     * {@code Alignment.BottomRight}: the text's right edge on the slot's right edge, its baseline on the bottom.
+     * <p>
+     * Half scale means everything is in doubled coordinates, so a gui position has to be multiplied out. The depth test
+     * is off so the text lands on top of the fluid icon rather than behind it.
+     */
+    private void drawFluidAmount(int litres, int slotX, int slotY) {
+        String text = formatLitres(litres);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        GL11.glPushMatrix();
+        GL11.glScalef(0.5F, 0.5F, 1F);
+        int x = (slotX + 16) * 2 - mc.fontRenderer.getStringWidth(text);
+        int y = (slotY + 16) * 2 - mc.fontRenderer.FONT_HEIGHT;
+        mc.fontRenderer.drawString(text, x, y, 0xFFFFFF, true);
+        GL11.glPopMatrix();
+        GL11.glEnable(GL11.GL_DEPTH_TEST);
+    }
+
+    /** Grouped in thousands with GT's "L" suffix, e.g. 144000 as "144,000L". */
+    private static String formatLitres(int litres) {
+        StringBuilder digits = new StringBuilder(Integer.toString(litres));
+        for (int at = digits.length() - 3; at > 0; at -= 3) {
+            digits.insert(at, ',');
+        }
+        return digits.append('L').toString();
     }
 
     private void drawStatus() {

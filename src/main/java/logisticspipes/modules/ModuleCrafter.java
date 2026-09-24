@@ -545,6 +545,9 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             if (resourceStack == null || resourceStack.getStackSize() == 0) {
                 continue;
             }
+            if (addIngredientForSlot(template, i)) {
+                continue;
+            }
             IResource req;
             if (getUpgradeManager().isFuzzyUpgrade() && fuzzyCraftingFlagArray[i].getBitSet().nextSetBit(0) != -1) {
                 DictResource dict;
@@ -602,6 +605,15 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         if (getUpgradeManager().hasByproductExtractor() && getByproductItem() != null) {
             template.addByproduct(getByproductItem());
         }
+    }
+
+    /**
+     * Lets a subclass take an ingredient slot over, e.g. as a fluid rather than as an item.
+     *
+     * @return true if the slot was added to the template here, so the item path below skips it
+     */
+    protected boolean addIngredientForSlot(IReqCraftingTemplate template, int slot) {
+        return false;
     }
 
     /**

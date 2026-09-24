@@ -21,6 +21,7 @@ import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraftforge.fluids.FluidStack;
 
 import cpw.mods.fml.client.FMLClientHandler;
 import logisticspipes.LPConstants;
@@ -39,6 +40,7 @@ import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.ICraftItems;
 import logisticspipes.interfaces.routing.IFilter;
+import logisticspipes.interfaces.routing.IFluidContainerReceiver;
 import logisticspipes.interfaces.routing.IProvideItems;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
@@ -88,7 +90,7 @@ import lombok.Getter;
 @CCType(name = "LogisticsChassiePipe")
 public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         implements ICraftItems, IBufferItems, ISimpleInventoryEventHandler, ISendRoutedItem, IProvideItems,
-        IHeadUpDisplayRendererProvider, ISendQueueContentRecieiver {
+        IHeadUpDisplayRendererProvider, ISendQueueContentRecieiver, IFluidContainerReceiver {
 
     private final ChassiModule _module;
     private final ItemIdentifierInventory _moduleInventory;
@@ -718,6 +720,30 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
                 ((LogisticsPromise) promise).item,
                 ((LogisticsPromise) promise).numberOfItems);
         _extras.add(new LogisticsItemOrder(new DictResource(stack, null), null, ResourceType.EXTRA, null));
+    }
+
+    @Override
+    public boolean wantsFluid(FluidStack fluid) {
+        for (int i = 0; i < getChassiSize(); i++) {
+            LogisticsModule module = _module.getSubModule(i);
+            if (module instanceof IFluidContainerReceiver && ((IFluidContainerReceiver) module).wantsFluid(fluid)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Fluid addressed to a module here, which empties it into the block it faces. */
+    @Override
+    public boolean receiveFluidContainer(FluidStack fluid) {
+        for (int i = 0; i < getChassiSize(); i++) {
+            LogisticsModule module = _module.getSubModule(i);
+            if (module instanceof IFluidContainerReceiver
+                    && ((IFluidContainerReceiver) module).receiveFluidContainer(fluid)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

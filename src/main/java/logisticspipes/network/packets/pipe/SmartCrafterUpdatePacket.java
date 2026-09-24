@@ -30,6 +30,11 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
     @Setter
     private int[] outputSatelliteId = new int[ModuleSmartCrafter.OUTPUT_SLOTS];
 
+    /** Litres per ingredient slot; above zero marks the slot as a fluid. */
+    @Getter
+    @Setter
+    private int[] fluidAmount = new int[9];
+
     @Getter
     @Setter
     private boolean cleanupEnabled = true;
@@ -63,6 +68,7 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         data.writeIntegerArray(outputRole);
         data.writeIntegerArray(outputChance);
         data.writeIntegerArray(outputSatelliteId);
+        data.writeIntegerArray(fluidAmount);
         data.writeBoolean(cleanupEnabled);
         data.writeInt(status);
         data.writeInt(setsReleased);
@@ -74,6 +80,7 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         outputRole = data.readIntegerArray();
         outputChance = data.readIntegerArray();
         outputSatelliteId = data.readIntegerArray();
+        fluidAmount = data.readIntegerArray();
         cleanupEnabled = data.readBoolean();
         status = data.readInt();
         setsReleased = data.readInt();
