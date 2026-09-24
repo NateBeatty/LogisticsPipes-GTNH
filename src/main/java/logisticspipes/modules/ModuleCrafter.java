@@ -479,6 +479,18 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     @Override
     public ICraftingTemplate addCrafting(IResource toCraft) {
 
+        IReqCraftingTemplate template = createTemplateFor(toCraft);
+        if (template == null) {
+            return null;
+        }
+        return fillTemplate(template);
+    }
+
+    /**
+     * Builds the template for a result this module makes, or null if it doesn't make it. Split out so a subclass can
+     * answer for a result that isn't an item.
+     */
+    protected IReqCraftingTemplate createTemplateFor(IResource toCraft) {
         List<ItemIdentifierStack> stack = getConfiguredCraftResults();
         if (stack == null) {
             return null;
@@ -505,10 +517,11 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 }
             }
         }
-        if (template == null) {
-            return null;
-        }
+        return template;
+    }
 
+    /** Adds this module's ingredients and byproducts to a template, whatever its result is. */
+    private IReqCraftingTemplate fillTemplate(IReqCraftingTemplate template) {
         IRequestItems[] target = new IRequestItems[9];
         for (int i = 0; i < 9; i++) {
             target[i] = this;

@@ -22,8 +22,8 @@ public class FluidLogisticsPromise implements IPromise {
     @Getter
     private final FluidIdentifier liquid;
     @Getter
-    private final int amount;
-    private final IProvideFluids sender;
+    protected int amount;
+    protected final IProvideFluids sender;
     @Getter
     private final ResourceType type;
 
@@ -48,10 +48,15 @@ public class FluidLogisticsPromise implements IPromise {
         return false;
     }
 
+    /**
+     * Splits the surplus off a promise that covers more than was asked for, which happens whenever a crafter makes more
+     * per set than the request needs. Was unsupported while nothing crafted fluid; a fluid crafter hits it on its first
+     * request that isn't an exact multiple of one set.
+     */
     @Override
     public IExtraPromise split(int more) {
-        // TODO Add When Fluid crafing is supported
-        throw new UnsupportedOperationException("Fluid Promises can't be split");
+        amount -= more;
+        return new FluidLogisticsExtraPromise(liquid, more, sender, type, false);
     }
 
     @Override

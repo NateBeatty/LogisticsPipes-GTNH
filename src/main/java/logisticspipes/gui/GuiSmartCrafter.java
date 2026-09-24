@@ -240,13 +240,22 @@ public class GuiSmartCrafter extends ModuleBaseGui {
     /** The ingredient slot under the cursor, or -1. */
     private int ingredientSlotAt(int mouseX, int mouseY) {
         for (int slot = 0; slot < 9; slot++) {
-            int left = guiLeft + INPUT_COL_X[slot % 3];
-            int top = guiTop + ROW_Y[slot / 3];
-            if (mouseX >= left && mouseX < left + 18 && mouseY >= top && mouseY < top + 18) {
+            if (isOver(mouseX, mouseY, INPUT_COL_X[slot % 3], ROW_Y[slot / 3])) {
                 return slot;
             }
         }
+        for (int out = 0; out < ModuleSmartCrafter.OUTPUT_SLOTS; out++) {
+            if (isOver(mouseX, mouseY, OUT_SLOT_X, ROW_Y[out])) {
+                return ModuleSmartCrafter.outputInventorySlot(out);
+            }
+        }
         return -1;
+    }
+
+    private boolean isOver(int mouseX, int mouseY, int slotX, int slotY) {
+        int left = guiLeft + slotX;
+        int top = guiTop + slotY;
+        return mouseX >= left && mouseX < left + 18 && mouseY >= top && mouseY < top + 18;
     }
 
     private void openAmountPopup(int slot) {
@@ -380,6 +389,11 @@ public class GuiSmartCrafter extends ModuleBaseGui {
             chanceFields[out].setEnabled(used);
             chanceFields[out].draw(mc, 0, 0);
             mc.fontRenderer.drawString("%", CHANCE_X + CHANCE_W + 1, ROW_Y[out] + 6, 0x404040);
+            int outSlot = ModuleSmartCrafter.outputInventorySlot(out);
+            if (crafter.isFluidSlot(outSlot)) {
+                drawFluidIcon(crafter.getFluidIngredient(outSlot), OUT_SLOT_X, ROW_Y[out]);
+                drawFluidAmount(crafter.getFluidAmount(outSlot), OUT_SLOT_X, ROW_Y[out]);
+            }
             roleButtons[out].enabled = used;
             roleButtons[out].displayString = StringUtils
                     .translate(GuiSmartCrafter.PREFIX + crafter.getOutputRole(out).name());

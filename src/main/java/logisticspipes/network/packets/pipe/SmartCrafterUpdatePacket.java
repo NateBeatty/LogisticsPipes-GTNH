@@ -30,10 +30,10 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
     @Setter
     private int[] outputSatelliteId = new int[ModuleSmartCrafter.OUTPUT_SLOTS];
 
-    /** Litres per ingredient slot; above zero marks the slot as a fluid. */
+    /** Litres per slot, ingredients then results; above zero marks the slot as a fluid. */
     @Getter
     @Setter
-    private int[] fluidAmount = new int[9];
+    private int[] fluidAmount = new int[9 + ModuleSmartCrafter.OUTPUT_SLOTS];
 
     @Getter
     @Setter

@@ -1,7 +1,11 @@
 package logisticspipes.modules;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import net.minecraft.client.renderer.texture.IIconRegister;
 import net.minecraft.entity.player.EntityPlayer;
@@ -14,17 +18,24 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IIcon;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
+import net.minecraftforge.fluids.FluidTankInfo;
 import net.minecraftforge.fluids.IFluidHandler;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
+import logisticspipes.LogisticsPipes;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.IInventoryUtil;
+import logisticspipes.interfaces.ILPPositionProvider;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
+import logisticspipes.interfaces.routing.ICraftFluids;
 import logisticspipes.interfaces.routing.IFluidContainerReceiver;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequestItems;
+import logisticspipes.logisticspipes.IRoutedItem;
+import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
 import logisticspipes.network.NewGuiHandler;
 import logisticspipes.network.PacketHandler;
 import logisticspipes.network.abstractguis.ModuleCoordinatesGuiProvider;
@@ -37,6 +48,7 @@ import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
 import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.request.FluidCraftingTemplate;
 import logisticspipes.request.IReqCraftingTemplate;
 import logisticspipes.request.RequestTree;
 import logisticspipes.request.resources.DictResource;
@@ -44,9 +56,13 @@ import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
 import logisticspipes.routing.ExitRoute;
+import logisticspipes.routing.FluidLogisticsPromise;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
+import logisticspipes.routing.order.IOrderInfoProvider;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
+import logisticspipes.routing.order.LogisticsFluidOrder;
+import logisticspipes.routing.order.LogisticsFluidOrderManager;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.FluidDisplayUtil;
@@ -72,7 +88,7 @@ import lombok.Getter;
  * releasing new sets, lets the ones in the machine finish and hands the machine over.
  */
 public class ModuleSmartCrafter extends ModuleCrafter
-        implements IGatedItemSink, IRequestFluid, IFluidContainerReceiver {
+        implements IGatedItemSink, IRequestFluid, IFluidContainerReceiver, ICraftFluids {
 
     private static final int INGREDIENT_SLOTS = 9;
     /** Result slots, each with its own {@link OutputRole}. They follow the ingredient slots in the inventory. */
@@ -126,10 +142,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private int pendingManualSets = 0;
 
     /**
-     * Litres per ingredient slot, the unit GT recipes and NEI use. Above zero means the slot holds a fluid rather than
-     * an item, which is the only thing that tells the two apart: a filled cell is a real item a recipe may want as one.
+     * Litres per slot, ingredients and results alike, in the unit GT recipes and NEI use. Above zero means the slot
+     * holds a fluid rather than an item, which is the only thing that tells the two apart: a filled cell is a real item
+     * a recipe may want as one.
      */
-    private final int[] fluidAmount = new int[INGREDIENT_SLOTS];
+    private final int[] fluidAmount = new int[INVENTORY_SIZE];
     /** Used when a fluid is dropped in without an amount of its own. One bucket, as GT recipes are written. */
     private static final int DEFAULT_FLUID_AMOUNT = 1000;
     /** Master switch for the built-in sweeps. Off leaves whatever is in the machine alone. */
@@ -244,6 +261,137 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
     }
 
+    /* Crafting a fluid */
+
+    /**
+     * Nothing is held here: this module makes fluid to order rather than storing it, and {@code LogisticsFluidManager}
+     * only asks pipes anyway, never a module.
+     */
+    @Override
+    public Map<FluidIdentifier, Integer> getAvailableFluids() {
+        return Collections.emptyMap();
+    }
+
+    /**
+     * Orders for fluid this module crafts. A module can own one of these: the manager only wants a position, not a
+     * fluid pipe, which is why a crafting module can answer for a fluid at all.
+     */
+    private LogisticsFluidOrderManager fluidOrders = null;
+
+    private LogisticsFluidOrderManager getFluidOrders() {
+        if (fluidOrders == null) {
+            fluidOrders = new LogisticsFluidOrderManager(
+                    _service instanceof ILPPositionProvider ? (ILPPositionProvider) _service : null);
+        }
+        return fluidOrders;
+    }
+
+    @Override
+    public IOrderInfoProvider fullFill(FluidLogisticsPromise promise, IRequestFluid destination, ResourceType type,
+            IAdditionalTargetInformation info) {
+        LogisticsFluidOrder order = getFluidOrders().addOrder(promise, destination, type, info);
+        gateDirty = true; // the ingredients for it still have to be pulled in
+        return order;
+    }
+
+    /**
+     * Sends crafted fluid to whoever ordered it, mirroring {@code PipeFluidProvider}: drain the machine, wrap what came
+     * out in a container and route it to the order's router.
+     */
+    private void sendCraftedFluid() {
+        if (fluidOrders == null || !getFluidOrders().hasOrders(ResourceType.CRAFTING)) {
+            return;
+        }
+        LogisticsFluidOrder order = getFluidOrders().peekAtTopRequest(ResourceType.CRAFTING);
+        IFluidHandler tank = facedTank();
+        if (tank == null) {
+            return;
+        }
+        int wanted = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
+        FluidStack drained = drainFromTank(tank, order.getFluid(), wanted);
+        if (drained == null || drained.amount <= 0) {
+            return;
+        }
+        ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(drained);
+        IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container);
+        item.setDestination(order.getRouter().getSimpleID());
+        item.setTransportMode(TransportMode.Active);
+        _service.queueRoutedItem(item, _service.inventoryOrientation());
+        getFluidOrders().sendSuccessfull(drained.amount, false, item);
+        onFluidResultSent(drained);
+        if (outstandingFluid(order.getFluid()) <= 0) {
+            // That was the last of what was ordered, so anything still in the machine is left over from a set that
+            // made more than the request needed. Send it on now, while this module is the one acting on the machine.
+            sendRemainingFluid(tank, order.getFluid());
+        }
+    }
+
+    /**
+     * Pushes what the machine still holds of a finished result into the network, where it ends up in the nearest fluid
+     * sink. Otherwise a crafter making more per set than was asked for slowly fills its own tank and stops.
+     * <p>
+     * It needs somewhere to go: LP's only fluid sink is the Basic Fluid pipe, and that accepts nothing until the fluid
+     * is in its filter.
+     */
+    private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid) {
+        int left = heldInTank(tank, fluid);
+        if (left <= 0) {
+            return;
+        }
+        FluidStack drained = drainFromTank(tank, fluid, left);
+        if (drained != null && drained.amount > 0) {
+            sendFluidBack(drained);
+        }
+    }
+
+    /** Whether this module has a job of its own, of either kind. */
+    private boolean hasWork() {
+        return _service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)
+                || (fluidOrders != null && getFluidOrders().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA));
+    }
+
+    /**
+     * Drains from our side if the machine allows it, else without a side. GT restricts which faces a fluid may be
+     * pulled from, much as it does for item slots, so the face we insert through often isn't one of them.
+     */
+    private FluidStack drainFromTank(IFluidHandler tank, FluidIdentifier fluid, int amount) {
+        FluidStack wanted = fluid.makeFluidStack(amount);
+        FluidStack drained = tank.drain(insertionSide(), wanted, true);
+        if (drained == null || drained.amount <= 0) {
+            drained = tank.drain(ForgeDirection.UNKNOWN, wanted, true);
+        }
+        return drained;
+    }
+
+    private int heldInTank(IFluidHandler tank, FluidIdentifier fluid) {
+        FluidTankInfo[] tanks = tank.getTankInfo(insertionSide());
+        if (tanks == null || tanks.length == 0) {
+            tanks = tank.getTankInfo(ForgeDirection.UNKNOWN);
+        }
+        if (tanks == null) {
+            return 0;
+        }
+        int held = 0;
+        for (FluidTankInfo info : tanks) {
+            if (info != null && info.fluid != null && fluid.equals(FluidIdentifier.get(info.fluid))) {
+                held += info.fluid.amount;
+            }
+        }
+        return held;
+    }
+
+    /** A fluid result leaving counts as set progress, the same as an item result being extracted. */
+    private void onFluidResultSent(FluidStack sent) {
+        FluidIdentifier fluid = FluidIdentifier.get(sent);
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            if (isFluidSlot(slot) && fluid != null && fluid.equals(getFluidIngredient(slot))) {
+                creditSets(out, sent.amount);
+                return;
+            }
+        }
+    }
+
     @Override
     public void sendFailed(FluidIdentifier value1, Integer value2) {
         // A delivery that never arrived. Nothing is reserved for fluids, so the next gate update simply asks again.
@@ -277,7 +425,19 @@ public class ModuleSmartCrafter extends ModuleCrafter
     @Override
     public void InventoryChanged(IInventory inventory) {
         super.InventoryChanged(inventory);
-        if (normalising || inventory != _dummyInventory || _world == null || !MainProxy.isServer(getWorld())) {
+        if (inventory != _dummyInventory || _world == null || !MainProxy.isServer(getWorld())) {
+            return;
+        }
+        refreshFluidSlots();
+    }
+
+    /**
+     * Re-reads which slots hold a fluid. Needed after a load as well as after an edit: the listener only fires on a
+     * change, so a module restored from NBT would never mark its fluid slots, leaving a fluid result looking like an
+     * ordinary item and keeping it out of the interests a crafter is found by.
+     */
+    private void refreshFluidSlots() {
+        if (normalising) {
             return;
         }
         normalising = true; // rewriting a slot below calls back in here
@@ -291,7 +451,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private boolean normalising = false;
 
     private void normaliseFluidSlots() {
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+        for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
             ItemIdentifierStack stack = getMaterials(slot);
             if (stack == null) {
                 fluidAmount[slot] = 0;
@@ -445,16 +605,86 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /** The output whose arrivals count finished sets. */
     private int primaryOutput() {
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            if (outputRole[i] == OutputRole.PRODUCT && getOutput(i) != null) {
+            if (outputRole[i] == OutputRole.PRODUCT && getOutput(i) != null && !isFluidSlot(outputInventorySlot(i))) {
                 return i;
             }
         }
         return -1;
     }
 
+    /**
+     * Adds the fluid results to what the base declares for its item ones.
+     * <p>
+     * This is what makes a fluid result findable at all: {@code RequestTreeNode.checkCrafting} only asks routers that
+     * declared interest, and {@code ServerRouter.getRoutersInterestedIn} keys a {@code FluidResource} by
+     * {@code getFluid().getItemIdentifier()} - LP's container item for that fluid. Without this the recipe is craftable
+     * in principle and invisible in practice.
+     */
+    @Override
+    public Set<ItemIdentifier> getSpecificInterests() {
+        Set<ItemIdentifier> interests = super.getSpecificInterests();
+        if (interests == null) {
+            interests = new TreeSet<>();
+        }
+        StringBuilder debug = new StringBuilder();
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            debug.append(" [").append(out).append(" role=").append(outputRole[out]).append(" item=")
+                    .append(getOutput(out)).append(" isFluid=").append(isFluidSlot(slot)).append(" litres=")
+                    .append(fluidAmount[slot]).append(" fluid=")
+                    .append(getFluidIngredient(slot) == null ? "-" : getFluidIngredient(slot).getName()).append("]");
+            if (outputRole[out] == OutputRole.PRODUCT && isFluidSlot(slot)) {
+                FluidIdentifier fluid = getFluidIngredient(slot);
+                if (fluid != null) {
+                    interests.add(fluid.getItemIdentifier());
+                }
+            }
+        }
+        String summary = debug.toString();
+        if (!summary.equals(loggedInterests)) {
+            loggedInterests = summary;
+            LogisticsPipes.log.info("[SmartCrafter DEBUG] results:" + summary + " -> interests=" + interests);
+        }
+        return interests;
+    }
+
+    private String loggedInterests = null;
+
+    /** True when some result is configured at all, fluid or item. The gate has nothing to do without one. */
+    private boolean hasAnyResult() {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (getOutput(i) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Litres of this fluid result that orders are still waiting for. */
+    private int outstandingFluid(FluidIdentifier fluid) {
+        if (fluidOrders == null || fluid == null) {
+            return 0;
+        }
+        int total = 0;
+        for (LogisticsFluidOrder order : getFluidOrders()) {
+            if (order.getType() == ResourceType.CRAFTING && fluid.equals(order.getFluid())) {
+                total += order.getAmount();
+            }
+        }
+        return total;
+    }
+
     /** True while no output can be requested, so nothing will ever start this recipe. */
     public boolean hasNoCraftableOutput() {
-        return primaryOutput() < 0;
+        if (primaryOutput() >= 0) {
+            return false;
+        }
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (outputRole[i] == OutputRole.PRODUCT && isFluidSlot(outputInventorySlot(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -467,7 +697,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public List<ItemIdentifierStack> getConfiguredCraftResults() {
         List<ItemIdentifierStack> list = new ArrayList<>(OUTPUT_SLOTS);
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            if (outputRole[i] != OutputRole.PRODUCT) {
+            if (outputRole[i] != OutputRole.PRODUCT || isFluidSlot(outputInventorySlot(i))) {
                 continue;
             }
             ItemIdentifierStack output = getOutput(i);
@@ -480,6 +710,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     @Override
     public boolean canCraft(IResource toCraft) {
+        if (toCraft instanceof FluidResource) {
+            return fluidResultSlot(((FluidResource) toCraft).getFluid()) >= 0;
+        }
         if (!(toCraft instanceof ItemResource) && !(toCraft instanceof DictResource)) {
             return false;
         }
@@ -489,6 +722,52 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
         return false;
+    }
+
+    /** The result slot producing this fluid as a Product, or -1. Only a Product is offered to the planner. */
+    private int fluidResultSlot(FluidIdentifier fluid) {
+        if (fluid == null) {
+            return -1;
+        }
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            LogisticsPipes.log.info(
+                    "[SmartCrafter DEBUG] result " + out
+                            + " role="
+                            + outputRole[out]
+                            + " isFluid="
+                            + isFluidSlot(slot)
+                            + " litres="
+                            + fluidAmount[slot]
+                            + " has="
+                            + getFluidIngredient(slot)
+                            + " wanted="
+                            + fluid);
+            if (outputRole[out] == OutputRole.PRODUCT && isFluidSlot(slot) && fluid.equals(getFluidIngredient(slot))) {
+                return out;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * A fluid result is offered to the planner the same way an item one is: the request tree and the chassis are both
+     * generic over {@link IResource}, so only the template differs.
+     */
+    @Override
+    protected IReqCraftingTemplate createTemplateFor(IResource toCraft) {
+        if (!(toCraft instanceof FluidResource)) {
+            return super.createTemplateFor(toCraft);
+        }
+        int out = fluidResultSlot(((FluidResource) toCraft).getFluid());
+        if (out < 0) {
+            return null;
+        }
+        int slot = outputInventorySlot(out);
+        return new FluidCraftingTemplate(
+                new FluidResource(getFluidIngredient(slot), fluidAmount[slot], ((FluidResource) toCraft).getTarget()),
+                this,
+                priority);
     }
 
     @Override
@@ -539,7 +818,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         int[] chances = packet.getOutputChance();
         int[] satellites = packet.getOutputSatelliteId();
         int[] fluids = packet.getFluidAmount();
-        for (int i = 0; i < INGREDIENT_SLOTS && i < fluids.length; i++) {
+        for (int i = 0; i < INVENTORY_SIZE && i < fluids.length; i++) {
             fluidAmount[i] = Math.max(0, fluids[i]);
         }
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
@@ -735,7 +1014,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         int[] chances = nbttagcompound.getIntArray("SmartOutputChance");
         int[] satellites = nbttagcompound.getIntArray("SmartOutputSatellite");
         int[] fluids = nbttagcompound.getIntArray("SmartFluidAmount");
-        for (int i = 0; i < INGREDIENT_SLOTS && i < fluids.length; i++) {
+        for (int i = 0; i < INVENTORY_SIZE && i < fluids.length; i++) {
             fluidAmount[i] = Math.max(0, fluids[i]);
         }
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
@@ -749,6 +1028,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 outputSatelliteId[i] = Math.max(0, satellites[i]);
             }
         }
+        // The listener never fires for a load, so mark the fluid slots here.
+        refreshFluidSlots();
     }
 
     @Override
@@ -773,7 +1054,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         super.handleAdvancedNEIRecipePacket(inputs, outputs, fluidInputs, player);
         // The base puts fluids in the upgrade's separate fluid inventory, which this module doesn't have: here a fluid
         // is an ingredient slot like any other, so they follow the items into the grid.
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+        for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
             fluidAmount[slot] = 0;
         }
         int slot = inputs.size();
@@ -843,6 +1124,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (_service.isNthTick(UNORDERED_OUTPUT_TICKS)) {
             drainUnorderedOutputs();
         }
+        if (_service.isNthTick(6)) {
+            sendCraftedFluid();
+        }
     }
 
     /**
@@ -858,7 +1142,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // Only while this module has a job of its own. With nothing ordered there is no craft of ours to keep running,
         // so anything in the machine is the player's (a set handed over by "Request set", something they put there) and
         // is left alone. Clearing an idle machine is the Cleanup checkbox's job, not this.
-        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
+        if (!hasWork()) {
             return;
         }
         IInventory inv = null;
@@ -917,15 +1201,22 @@ public class ModuleSmartCrafter extends ModuleCrafter
     @Override
     protected void onResultExtracted(ItemIdentifier item, int amount) {
         int output = outputIndexFor(item);
-        if (output < 0) {
-            return;
+        if (output >= 0) {
+            creditSets(output, amount);
         }
+    }
+
+    /**
+     * Counts what came out of one result slot towards finished sets. Shared by the item path and the fluid one, since a
+     * set is finished whether its result left as an item or as fluid.
+     */
+    private void creditSets(int output, int amount) {
         extractedPerOutput[output] += amount;
         int finished = 0;
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            ItemIdentifierStack stack = getOutput(i);
-            if (stack != null && stack.getStackSize() > 0) {
-                finished = Math.max(finished, extractedPerOutput[i] / stack.getStackSize());
+            int perSet = resultPerSet(i);
+            if (perSet > 0) {
+                finished = Math.max(finished, extractedPerOutput[i] / perSet);
             }
         }
         if (finished > creditedSets) {
@@ -934,6 +1225,16 @@ public class ModuleSmartCrafter extends ModuleCrafter
             gateDirty = true;
         }
         lastProgressTick = now();
+    }
+
+    /** How much of a result slot one set makes: a stack size for an item, litres for a fluid. */
+    private int resultPerSet(int output) {
+        int slot = outputInventorySlot(output);
+        if (isFluidSlot(slot)) {
+            return fluidAmount[slot];
+        }
+        ItemIdentifierStack stack = getOutput(output);
+        return stack == null ? 0 : stack.getStackSize();
     }
 
     private void clearResultProgress() {
@@ -1011,22 +1312,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     private void updateGate() {
         gateDirty = false;
-        if (getConfiguredCraftResult() == null) {
+        if (!hasAnyResult()) {
             resetGate();
             return;
         }
         // Sets needed for whichever product is furthest behind: one set yields every output at once, so ordering two
-        // of this recipe's products needs the larger of the two set counts, not their sum.
+        // of this recipe's products needs the larger of the two set counts, not their sum. A fluid result counts the
+        // same way, from its own orders, so a recipe that only makes fluid still pulls its ingredients in.
         int setsNeeded = 0;
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            ItemIdentifierStack output = getOutput(i);
-            if (outputRole[i] != OutputRole.PRODUCT || output == null || output.getStackSize() <= 0) {
+            if (outputRole[i] != OutputRole.PRODUCT) {
                 continue;
             }
-            int outstandingForOutput = outstandingResults(output);
+            int perSet = resultPerSet(i);
+            if (perSet <= 0) {
+                continue;
+            }
+            int slot = outputInventorySlot(i);
+            int outstandingForOutput = isFluidSlot(slot) ? outstandingFluid(getFluidIngredient(slot))
+                    : outstandingResults(getOutput(i));
             if (outstandingForOutput > 0) {
-                setsNeeded = Math
-                        .max(setsNeeded, (outstandingForOutput + output.getStackSize() - 1) / output.getStackSize());
+                setsNeeded = Math.max(setsNeeded, (outstandingForOutput + perSet - 1) / perSet);
             }
         }
         // Sets asked for by the "Request set" button have no order behind them, so they are counted here instead.
