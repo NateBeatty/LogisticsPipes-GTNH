@@ -1,8 +1,10 @@
 package logisticspipes.routing.order;
 
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 
 import logisticspipes.interfaces.IChangeListener;
 import logisticspipes.interfaces.ILPPositionProvider;
@@ -50,7 +52,7 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
 
     @Override
     public void sendFailed() {
-        _orders.getFirst().sendFailed();
+        notifySendFailed(_orders.getFirst());
         super.sendFailed();
     }
 
@@ -58,6 +60,7 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
             IAdditionalTargetInformation info) {
         LogisticsItemOrder order = new LogisticsItemOrder(new DictResource(stack, null), requester, type, info);
         _orders.addLast(order);
+        added(order);
         listen();
         return order;
     }
@@ -66,6 +69,7 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
             IAdditionalTargetInformation info) {
         LogisticsItemOrder order = new LogisticsItemOrder(stack, requester, type, info);
         _orders.addLast(order);
+        added(order);
         listen();
         return order;
     }
@@ -73,11 +77,18 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
     public LogisticsItemOrderExtra addExtra(DictResource stack) {
         LogisticsItemOrderExtra order = new LogisticsItemOrderExtra(stack, null, ResourceType.EXTRA, null);
         _orders.addLast(order);
+        added(order);
         listen();
         return order;
     }
 
-    public void removeExtras(DictResource resource) {
+    /**
+     * Spends extras on a new request.
+     *
+     * @return how much was taken from each job's surplus, so the new order can record what it borrowed
+     */
+    public Map<CraftingJob, Integer> removeExtras(DictResource resource) {
+        Map<CraftingJob, Integer> borrowed = new HashMap<>();
         int itemsToRemove = resource.getRequestedAmount();
         DictResource.Identifier ident = resource.getIdentifier();
         Iterator<LogisticsItemOrder> iter = _orders.iterator();
@@ -89,17 +100,30 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
                 if (itemsToRemove >= order.getAmount()) {
                     itemsToRemove -= order.getAmount();
                     toRemove.add(order);
+                    noteBorrowed(borrowed, order, order.getAmount());
                     if (itemsToRemove == 0) {
-                        _orders.removeAll(toRemove);
-                        return;
+                        break;
                     }
                 } else {
+                    noteBorrowed(borrowed, order, itemsToRemove);
                     order.getResource().getItemStack().setStackSize(order.getAmount() - itemsToRemove);
                     break;
                 }
             }
         }
         _orders.removeAll(toRemove);
+        // No longer this job's to make: the request that spent them owns them now.
+        for (LogisticsItemOrder order : toRemove) {
+            order.setFinished(true);
+            CraftingJobs.orderFinished(order);
+        }
+        return borrowed;
+    }
+
+    private static void noteBorrowed(Map<CraftingJob, Integer> borrowed, LogisticsItemOrder extra, int amount) {
+        if (extra.getJob() != null && amount > 0) {
+            borrowed.merge(extra.getJob(), amount, Integer::sum);
+        }
     }
 
     public int totalItemsCountInOrders(ItemIdentifier item) {

@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import net.minecraft.client.renderer.texture.IIconRegister;
@@ -31,12 +32,17 @@ import logisticspipes.utils.item.ItemIdentifierStack;
  * Holds the intermediates of a craft until the crafter that needs them has a whole set, in a chest the player provides
  * and can expand.
  * <p>
- * The pool is <b>anonymous</b>: nothing in here belongs to a particular crafter. That is safe because intermediates are
- * fungible, so a crafter taking "someone else's" circuits is made whole when the other crafter's own order delivers.
- * What keeps two crafters from both counting the same stock is that a crafter checks and reserves its whole set in one
- * synchronous pass, never a partial one. See "REVISED 2026-09-24" in the design notes.
+ * The stock itself is pooled (items aren't tagged with an owner), but each Smart Crafter keeps a <b>credit</b> for what
+ * sub-crafters sent to a buffer on its behalf, and takes no more than that ({@code ModuleSmartCrafter.buffered}). A
+ * fully anonymous pool, where any crafter could take any matching stock, broke as soon as the stock included something
+ * no crafter was owed (a cancelled job's leftovers): a request that planned the same item from storage used the buffer
+ * stock instead, and its provider order was never allowed to send and stayed open for ever.
  * <p>
- * A buffer never answers a general request: only a crafter collecting a reserved set may take from it, which is what
+ * Stock beyond all crafters' credit is an <b>orphan</b> and goes back to the network ({@link #returnAllOrphans}). That
+ * happens on events, never on a timer: when a crafter drops its credit (its work ended or it was removed), and when a
+ * buffer first loads (after a restart nothing is owed, so everything is an orphan).
+ * <p>
+ * A buffer never answers a general request: only a crafter collecting what it is owed may take from it, which is what
  * stops ordinary storage requests draining the pool.
  */
 public class ModuleCraftingBuffer extends LogisticsModule implements IRequireReliableTransport {
@@ -99,6 +105,12 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         if (!registered) {
             ModuleCraftingBuffer.AllBuffers.add(this);
             registered = true;
+            // Freshly loaded: after a restart no crafter is owed anything, so whatever is here is an orphan. Loading
+            // with a live network (a chunk coming back) only returns what really isn't owed.
+            orphansPending = true;
+        }
+        if (orphansPending) {
+            orphansPending = !returnOrphans();
         }
     }
 
@@ -170,8 +182,9 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
     }
 
     /**
-     * Only takes an intermediate a crafter is actually waiting for, and only with room to put it. Never a general sink:
-     * without the crafter check this would quietly become a second storage system.
+     * Only takes an intermediate some crafter has credit for and that isn't in the buffers yet, and only with room to
+     * put it. Never a general sink: without that check this would quietly become a second storage system, and an orphan
+     * on its way back to storage would come straight back in.
      */
     @Override
     public SinkReply sinksItem(ItemIdentifier item, int bestPriority, int bestCustomPriority, boolean allowDefault,
@@ -183,10 +196,10 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
                 && bestCustomPriority >= _sinkReply.customPriority)) {
             return debugDecline(item, "a better sink already replied");
         }
-        if (!isWantedByACrafter(item)) {
+        if (!isOwed(item)) {
             return debugDecline(
                     item,
-                    "no crafter is waiting for it (crafters=" + ModuleSmartCrafter.AllCrafters.size() + ")");
+                    "no crafter is owed more of it (crafters=" + ModuleSmartCrafter.AllCrafters.size() + ")");
         }
         IInventoryUtil inv = inventory();
         if (inv == null) {
@@ -218,14 +231,87 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         return null;
     }
 
-    /** Whether any loaded Smart Crafter has this item as an ingredient of a recipe it is currently working on. */
-    private boolean isWantedByACrafter(ItemIdentifier item) {
+    /**
+     * Whether crafters have credit for more of this item than all buffers hold, i.e. some of it is still on its way.
+     */
+    private static boolean isOwed(ItemIdentifier item) {
+        return creditFor(item) > stockInAllBuffers(item);
+    }
+
+    /** How much of an item all loaded Smart Crafters together have credit for. */
+    private static int creditFor(ItemIdentifier item) {
+        int total = 0;
         for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
-            if (crafter.wantsIntermediate(item)) {
-                return true;
+            total += crafter.getBufferedCredit(item);
+        }
+        return total;
+    }
+
+    private static int stockInAllBuffers(ItemIdentifier item) {
+        int total = 0;
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            total += buffer.getAvailable(item);
+        }
+        return total;
+    }
+
+    /* Orphans */
+
+    /** Most stacks one buffer sends back per tick, so a full chest can't flood the network at once. */
+    private static final int MAX_RETURN_STACKS = 16;
+
+    /** This buffer still holds orphans it couldn't send in one go; it carries on next tick until they're gone. */
+    private boolean orphansPending = false;
+
+    /**
+     * Sends back everything in the buffers that no crafter has credit for. Called when that can have changed: a crafter
+     * dropped its credit, or a buffer loaded. Stock beyond the credit is sent from whichever buffers hold it; each
+     * buffer sends at most {@link #MAX_RETURN_STACKS} and, if more is left, finishes on the following ticks.
+     */
+    public static void returnAllOrphans() {
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            buffer.orphansPending = true;
+        }
+    }
+
+    /** Sends this buffer's share of the orphans. @return true once none are left here */
+    private boolean returnOrphans() {
+        IInventoryUtil inv = inventory();
+        if (inv == null) {
+            return true;
+        }
+        int stacks = 0;
+        for (Map.Entry<ItemIdentifier, Integer> entry : inv.getItemsAndCount().entrySet()) {
+            ItemIdentifier item = entry.getKey();
+            // Credit is shared by all buffers, so the orphans are whatever all of them hold beyond it, and this buffer
+            // sends as much of that as it has. Buffers that ran earlier this tick have already sent their part.
+            int excess = Math.min(entry.getValue(), stockInAllBuffers(item) - creditFor(item));
+            if (excess <= 0) {
+                continue;
+            }
+            if (!hasSomewhereToGo(item)) {
+                // Nowhere would take it: it would travel, find nothing and be dropped. Left for the next event.
+                continue;
+            }
+            while (excess > 0) {
+                if (stacks >= MAX_RETURN_STACKS) {
+                    return false;
+                }
+                ItemStack taken = take(item, Math.min(excess, item.getMaxStackSize()));
+                if (taken == null || taken.stackSize <= 0) {
+                    break;
+                }
+                _service.sendStack(taken, -1, ItemSendMode.Normal, null);
+                excess -= taken.stackSize;
+                stacks++;
             }
         }
-        return false;
+        return true;
+    }
+
+    private boolean hasSomewhereToGo(ItemIdentifier item) {
+        return _service.getRouter() != null && SimpleServiceLocator.logisticsManager
+                .hasDestination(item, true, _service.getRouter().getSimpleID(), Collections.emptyList()) != null;
     }
 
     @Override

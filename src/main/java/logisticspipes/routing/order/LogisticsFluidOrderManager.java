@@ -34,7 +34,7 @@ public class LogisticsFluidOrderManager extends LogisticsOrderManager<LogisticsF
 
     @Override
     public void sendFailed() {
-        _orders.getFirst().sendFailed();
+        notifySendFailed(_orders.getFirst());
         super.sendFailed();
     }
 
@@ -50,6 +50,7 @@ public class LogisticsFluidOrderManager extends LogisticsOrderManager<LogisticsF
                 type,
                 info);
         _orders.addLast(order);
+        added(order);
         listen();
         return order;
     }

@@ -47,6 +47,15 @@ public class LogisticsOrderLinkedList<E extends LogisticsOrder, I> implements It
         }
     }
 
+    /** Removes one order from anywhere in the list. False if it wasn't here. */
+    public boolean remove(E order) {
+        if (!list.remove(order)) {
+            return false;
+        }
+        elemRemove(order);
+        return true;
+    }
+
     public void removeAll(List<E> orders) {
         list.removeAll(orders);
         for (E order : orders) {

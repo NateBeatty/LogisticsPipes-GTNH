@@ -17,6 +17,7 @@ import cpw.mods.fml.relauncher.Side;
 import logisticspipes.commands.commands.debug.DebugGuiController;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.pathfinder.changedetection.LPWorldAccess;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.tuples.LPPosition;
@@ -42,6 +43,9 @@ public class LPTickHandler {
         SimpleServiceLocator.serverBufferHandler.serverTick(event);
         MainProxy.proxy.tickServer();
         DebugGuiController.instance().execServer();
+        if (event.phase == Phase.END) {
+            CraftingJobs.serverTick();
+        }
     }
 
     private static final Map<World, LPWorldInfo> worldInfo = new MapMaker().weakKeys().makeMap();

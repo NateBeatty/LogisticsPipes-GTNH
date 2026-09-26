@@ -107,6 +107,8 @@ import logisticspipes.routing.LogisticsDictPromise;
 import logisticspipes.routing.LogisticsExtraDictPromise;
 import logisticspipes.routing.LogisticsExtraPromise;
 import logisticspipes.routing.LogisticsPromise;
+import logisticspipes.routing.order.CraftingJob;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.utils.AdjacentTile;
@@ -165,7 +167,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     public boolean cleanupModeIsExclude = true;
     // for reliable transport
-    protected final DelayQueue<DelayedGeneric<Pair<ItemIdentifierStack, IAdditionalTargetInformation>>> _lostItems = new DelayQueue<>();
+    protected final DelayQueue<DelayedGeneric<LostItem>> _lostItems = new DelayQueue<>();
 
     protected final PlayerCollectionList localModeWatchers = new PlayerCollectionList();
 
@@ -278,32 +280,59 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             return;
         }
         // if(true) return;
-        DelayedGeneric<Pair<ItemIdentifierStack, IAdditionalTargetInformation>> lostItem = _lostItems.poll();
+        DelayedGeneric<LostItem> lostItem = _lostItems.poll();
         int rerequested = 0;
         while (lostItem != null && rerequested < 100) {
-            Pair<ItemIdentifierStack, IAdditionalTargetInformation> pair = lostItem.get();
+            LostItem lost = lostItem.get();
+            if (lost.job != null && (lost.job.isCancelled() || lost.job.isDone())) {
+                // The request it was for is gone: asking again would only make ingredients nobody wants.
+                lostItem = _lostItems.poll();
+                continue;
+            }
             if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING)) {
                 SinkReply reply = LogisticsManager
-                        .canSink(getRouter(), null, true, pair.getValue1().getItem(), null, true, true);
+                        .canSink(getRouter(), null, true, lost.stack.getItem(), null, true, true);
                 if (reply == null || reply.maxNumberOfItems < 1) {
-                    _lostItems.add(new DelayedGeneric<>(pair, 9000 + (int) (Math.random() * 2000)));
+                    _lostItems.add(new DelayedGeneric<>(lost, 9000 + (int) (Math.random() * 2000)));
                     lostItem = _lostItems.poll();
                     continue;
                 }
             }
-            int received = RequestTree.requestPartial(pair.getValue1(), (CoreRoutedPipe) _service, pair.getValue2());
+            int received;
+            CraftingJob previous = CraftingJobs.enter(lost.job);
+            try {
+                received = RequestTree.requestPartial(lost.stack, (CoreRoutedPipe) _service, lost.info);
+            } finally {
+                CraftingJobs.exit(previous);
+            }
             rerequested++;
-            if (received < pair.getValue1().getStackSize()) {
-                pair.getValue1().setStackSize(pair.getValue1().getStackSize() - received);
-                _lostItems.add(new DelayedGeneric<>(pair, 4500 + (int) (Math.random() * 1000)));
+            if (received < lost.stack.getStackSize()) {
+                lost.stack.setStackSize(lost.stack.getStackSize() - received);
+                _lostItems.add(new DelayedGeneric<>(lost, 4500 + (int) (Math.random() * 1000)));
             }
             lostItem = _lostItems.poll();
         }
         // The loop polls before re-testing its condition, so exiting on the rerequested cap
         // leaves an already-polled item in hand that was never processed. Put it back.
         if (lostItem != null) {
-            Pair<ItemIdentifierStack, IAdditionalTargetInformation> pair = lostItem.get();
-            _lostItems.add(new DelayedGeneric<>(pair, 9000 + (int) (Math.random() * 2000)));
+            _lostItems.add(new DelayedGeneric<>(lostItem.get(), 9000 + (int) (Math.random() * 2000)));
+        }
+    }
+
+    /**
+     * An ingredient to ask for again, and the job it was for when that is known (a failed delivery says so, an item
+     * lost in transit doesn't). The re-request joins that job, and is dropped if the job was cancelled meanwhile.
+     */
+    protected static final class LostItem {
+
+        final ItemIdentifierStack stack;
+        final IAdditionalTargetInformation info;
+        final CraftingJob job;
+
+        LostItem(ItemIdentifierStack stack, IAdditionalTargetInformation info, CraftingJob job) {
+            this.stack = stack;
+            this.info = info;
+            this.job = job;
         }
     }
 
@@ -312,7 +341,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
-        _lostItems.add(new DelayedGeneric<>(new Pair<>(item, info), 5000));
+        _lostItems.add(new DelayedGeneric<>(new LostItem(item, info, CraftingJobs.current()), 5000));
     }
 
     @Override
@@ -423,24 +452,29 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     @Override
     public LogisticsItemOrder fullFill(LogisticsPromise promise, IRequestItems destination,
             IAdditionalTargetInformation info) {
+        // Spending another request's surplus: remember whose, so cancelling that request can plan this part again.
+        Map<CraftingJob, Integer> borrowed = null;
         if (promise instanceof LogisticsExtraDictPromise) {
-            _service.getItemOrderManager().removeExtras(((LogisticsExtraDictPromise) promise).getResource());
+            borrowed = _service.getItemOrderManager().removeExtras(((LogisticsExtraDictPromise) promise).getResource());
         }
         if (promise instanceof LogisticsExtraPromise) {
-            _service.getItemOrderManager()
+            borrowed = _service.getItemOrderManager()
                     .removeExtras(new DictResource(new ItemIdentifierStack(promise.item, promise.numberOfItems), null));
         }
+        LogisticsItemOrder order;
         if (promise instanceof LogisticsDictPromise) {
-            _service.spawnParticle(Particles.WhiteParticle, 2);
-            return _service.getItemOrderManager()
+            order = _service.getItemOrderManager()
                     .addOrder(((LogisticsDictPromise) promise).getResource(), destination, ResourceType.CRAFTING, info);
+        } else {
+            order = _service.getItemOrderManager().addOrder(
+                    new ItemIdentifierStack(promise.item, promise.numberOfItems),
+                    destination,
+                    ResourceType.CRAFTING,
+                    info);
         }
+        order.addBorrowed(borrowed);
         _service.spawnParticle(Particles.WhiteParticle, 2);
-        return _service.getItemOrderManager().addOrder(
-                new ItemIdentifierStack(promise.item, promise.numberOfItems),
-                destination,
-                ResourceType.CRAFTING,
-                info);
+        return order;
     }
 
     @Override
@@ -1504,6 +1538,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 if (route == ResultRoute.TO_BUFFER) {
                     // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
                     // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
+                    onResultBuffered(nextOrder, stackToSend.stackSize);
                     _service.sendStack(stackToSend, -1, ItemSendMode.Normal, nextOrder.getInformation());
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
                 } else if (nextOrder.getDestination() != null) {
@@ -1544,6 +1579,9 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         /** Nowhere yet: leave it in the machine and try again later. */
         HOLD
     }
+
+    /** Called when a result for an order is sent to a crafting buffer instead of to the order's destination. */
+    protected void onResultBuffered(LogisticsItemOrder order, int amount) {}
 
     /**
      * Lets a subclass divert a result that the destination can't take yet. The base always sends to the order, which is

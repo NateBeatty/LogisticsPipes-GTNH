@@ -127,7 +127,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         if (p_146284_1_.id == 0) {
             itemDisplay_1.prevPage();
         } else if (p_146284_1_.id == 1) {
-            itemDisplay_1.prevPage();
+            itemDisplay_1.nextPage();
         } else if (p_146284_1_.id == 2) {
             MainProxy.sendPacketToServer(PacketHandler.getPacket(RequestAmountTaskSubGui.class).setTilePos(tile));
         } else if (p_146284_1_.id == 3 && itemDisplay_1.getSelectedItem() != null) {
@@ -158,7 +158,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         } else if (p_146284_1_.id == 7) {
             itemDisplay_2.prevPage();
         } else if (p_146284_1_.id == 8) {
-            itemDisplay_2.prevPage();
+            itemDisplay_2.nextPage();
         }
     }
 

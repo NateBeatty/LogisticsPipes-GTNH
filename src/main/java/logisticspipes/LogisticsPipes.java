@@ -62,6 +62,8 @@ import logisticspipes.items.LogisticsSolidBlockItem;
 import logisticspipes.items.RemoteOrderer;
 import logisticspipes.logistics.LogisticsFluidManager;
 import logisticspipes.logistics.LogisticsManager;
+import logisticspipes.modules.ModuleCraftingBuffer;
+import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.network.GuiHandler;
 import logisticspipes.network.NewGuiHandler;
 import logisticspipes.network.PacketHandler;
@@ -136,6 +138,7 @@ import logisticspipes.renderer.LogisticsPipeItemRenderer;
 import logisticspipes.renderer.newpipe.LogisticsNewRenderPipe;
 import logisticspipes.routing.RouterManager;
 import logisticspipes.routing.ServerRouter;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.pathfinder.PipeInformationManager;
 import logisticspipes.textures.Textures;
 import logisticspipes.ticks.ClientPacketBufferHandlerThread;
@@ -562,6 +565,9 @@ public class LogisticsPipes {
         HudUpdateTick.clearUpdateFlags();
         PipeItemsSatelliteLogistics.cleanup();
         PipeFluidSatellite.cleanup();
+        ModuleSmartCrafter.cleanupCrafters();
+        ModuleCraftingBuffer.cleanup();
+        CraftingJobs.clear();
         ServerRouter.cleanup();
         if (event.getSide().equals(Side.CLIENT)) {
             LogisticsHUDRenderer.instance().clear();

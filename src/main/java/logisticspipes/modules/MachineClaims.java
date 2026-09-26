@@ -88,6 +88,21 @@ final class MachineClaims {
         return false;
     }
 
+    /** How many loaded crafters are in line for this machine, not counting the one holding it. */
+    static int waitingCount(Key machine) {
+        Claim claim = CLAIMS.get(machine);
+        if (claim == null) {
+            return 0;
+        }
+        int count = 0;
+        for (WeakReference<ModuleSmartCrafter> ref : claim.waiters) {
+            if (ref.get() != null) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     /** Releases the machine if the crafter owns it, handing it to the crafter that has waited longest. */
     static void release(Key machine, ModuleSmartCrafter crafter, long now) {
         Claim claim = CLAIMS.get(machine);

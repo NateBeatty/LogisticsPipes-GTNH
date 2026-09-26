@@ -21,6 +21,7 @@ import logisticspipes.proxy.MainProxy;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.utils.PlayerCollectionList;
 import logisticspipes.utils.item.ItemIdentifierStack;
+import logisticspipes.utils.tuples.LPPosition;
 
 public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> implements Iterable<T> {
 
@@ -110,6 +111,7 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
 
     @SuppressWarnings("unchecked")
     public void sendSuccessfull(int number, boolean defersend, IRoutedItem item) {
+        CraftingJobs.orderProgressed(_orders.getFirst(), number);
         _orders.getFirst().reduceAmountBy(number);
         if (_orders.getFirst().isWatched() && item != null) {
             IDistanceTracker tracker = new DistanceTracker();
@@ -121,6 +123,7 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
             LogisticsOrder order = _orders.removeFirst();
             order.setFinished(true);
             order.setInProgress(false);
+            CraftingJobs.orderFinished(order);
         }
         if (!_orders.isEmpty()) {
             LogisticsOrder start = _orders.getFirst();
@@ -143,11 +146,64 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
             LogisticsOrder order = _orders.removeFirst();
             order.setFinished(true);
             order.setInProgress(false);
+            CraftingJobs.orderFinished(order);
         }
         if (!_orders.isEmpty()) {
             _orders.getFirst().setInProgress(true);
         }
         listen();
+    }
+
+    /**
+     * Tells the order's destination that it won't arrive. Whatever the destination requests in reply joins the same
+     * job, so a re-request after a failed delivery stays part of the request it replaces.
+     */
+    protected void notifySendFailed(LogisticsOrder order) {
+        CraftingJob previous = CraftingJobs.enter(order.getJob());
+        try {
+            order.sendFailed();
+        } finally {
+            CraftingJobs.exit(previous);
+        }
+    }
+
+    /** Registers a newly added order with the job being planned, if any. */
+    protected void added(T order) {
+        CraftingJobs.orderAdded(this, order);
+    }
+
+    /**
+     * Removes an order from anywhere in the queue, for a cancelled job. Unlike {@link #sendFailed} the destination is
+     * not told: the whole request is being dropped, so there is nobody who should ask again.
+     *
+     * @return false if the order wasn't in this queue
+     */
+    @SuppressWarnings("unchecked")
+    public boolean cancel(LogisticsOrder order) {
+        boolean wasFirst = !_orders.isEmpty() && _orders.getFirst() == order;
+        if (!_orders.remove((T) order)) {
+            return false;
+        }
+        order.setFinished(true);
+        order.setInProgress(false);
+        CraftingJobs.orderFinished(order);
+        if (wasFirst && !_orders.isEmpty()) {
+            _orders.getFirst().setInProgress(true);
+        }
+        listen();
+        return true;
+    }
+
+    /** Lowers an order that stays in the queue, keeping the running totals right. */
+    public void shrink(LogisticsOrder order, int amount) {
+        CraftingJobs.orderShrunk(order, amount);
+        order.reduceAmountBy(amount);
+        listen();
+    }
+
+    /** Where the pipe holding these orders is, or null if unknown. */
+    public LPPosition getPosition() {
+        return pos == null ? null : pos.getLPPosition();
     }
 
     @SuppressWarnings("unchecked")

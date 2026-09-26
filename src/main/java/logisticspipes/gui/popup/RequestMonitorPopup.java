@@ -28,8 +28,13 @@ import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
+import logisticspipes.network.PacketHandler;
+import logisticspipes.network.packets.orderer.CancelWatchedRequestPacket;
 import logisticspipes.pipes.PipeBlockRequestTable;
+import logisticspipes.proxy.MainProxy;
+import logisticspipes.request.resources.IResource;
 import logisticspipes.routing.order.IOrderInfoProvider;
+import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LinkedLogisticsOrderList;
 import logisticspipes.utils.Color;
 import logisticspipes.utils.gui.GuiGraphics;
@@ -38,6 +43,7 @@ import logisticspipes.utils.gui.SubGuiScreen;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import logisticspipes.utils.string.ChatColor;
 import logisticspipes.utils.string.StringUtils;
+import logisticspipes.utils.tuples.Pair;
 
 public class RequestMonitorPopup extends SubGuiScreen {
 
@@ -116,8 +122,9 @@ public class RequestMonitorPopup extends SubGuiScreen {
     public void initGui() {
         super.initGui();
         buttonList.clear();
-        buttonList.add(new GuiButton(0, width / 2 - 90, height / 2 + 74, 80, 20, "Close"));
-        buttonList.add(new GuiButton(1, width / 2 + 10, height / 2 + 74, 80, 20, "Save as Image"));
+        buttonList.add(new GuiButton(0, width / 2 - 118, height / 2 + 74, 76, 20, "Close"));
+        buttonList.add(new GuiButton(1, width / 2 - 38, height / 2 + 74, 76, 20, "Save as Image"));
+        buttonList.add(new GuiButton(2, width / 2 + 42, height / 2 + 74, 76, 20, "Cancel Craft"));
     }
 
     @Override
@@ -126,6 +133,47 @@ public class RequestMonitorPopup extends SubGuiScreen {
             exitGui();
         } else if (button.id == 1) {
             saveTreeToImage();
+        } else if (button.id == 2) {
+            confirmCancel();
+        }
+    }
+
+    /** Asks before cancelling, naming what will stop, since a cancel can't be undone. */
+    private void confirmCancel() {
+        Pair<IResource, LinkedLogisticsOrderList> watched = _table.watchedRequests.get(orderId);
+        if (watched == null) {
+            return;
+        }
+        int[] open = new int[2]; // crafts, deliveries
+        countOpenOrders(watched.getValue2(), open);
+        IResource resource = watched.getValue1();
+        String what = resource == null || resource.getDisplayItem() == null ? "this request"
+                : resource.getDisplayItem().getFriendlyName();
+        setSubGui(
+                new GuiConfirmPopup(
+                        "Cancel",
+                        () -> MainProxy.sendPacketToServer(
+                                PacketHandler.getPacket(CancelWatchedRequestPacket.class).setInteger(orderId)
+                                        .setTilePos(_table.container)),
+                        "Cancel " + what + "?",
+                        "Stops " + open[0] + " craft(s) and " + open[1] + " delivery(ies).",
+                        "Items already moving will still arrive.",
+                        "This can't be undone."));
+    }
+
+    private static void countOpenOrders(LinkedLogisticsOrderList orders, int[] open) {
+        for (IOrderInfoProvider order : orders) {
+            if (order.isFinished()) {
+                continue;
+            }
+            if (order.getType() == ResourceType.CRAFTING) {
+                open[0]++;
+            } else if (order.getType() == ResourceType.PROVIDER) {
+                open[1]++;
+            }
+        }
+        for (LinkedLogisticsOrderList sub : orders.getSubOrders()) {
+            countOpenOrders(sub, open);
         }
     }
 

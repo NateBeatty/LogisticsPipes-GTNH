@@ -1,5 +1,6 @@
 package logisticspipes.request;
 
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -12,12 +13,16 @@ import net.minecraft.item.Item;
 
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IProvide;
+import logisticspipes.interfaces.routing.IRequest;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
 import logisticspipes.routing.ExitRoute;
+import logisticspipes.routing.IRouter;
+import logisticspipes.routing.order.CraftingJob;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.LinkedLogisticsOrderList;
 import logisticspipes.utils.FinalPair;
 import logisticspipes.utils.FluidIdentifier;
@@ -74,6 +79,33 @@ public class RequestTree extends RequestTreeNode {
 
     protected LinkedLogisticsOrderList fullFillAll() {
         return fullFill();
+    }
+
+    /**
+     * Fulfils a planned request as one {@link CraftingJob}: every order it creates, on any pipe, is stamped with the
+     * job so the request can be listed and cancelled as a whole. Joins the job already being worked on, if any.
+     *
+     * @param itemsOneLevelDown true when the tree's root is a placeholder whose children are the requested items
+     */
+    private static LinkedLogisticsOrderList fullFillAsJob(RequestTree tree, List<ItemIdentifierStack> requested,
+            IRouter requester, boolean itemsOneLevelDown) {
+        boolean joined = CraftingJobs.current() != null;
+        CraftingJob job = CraftingJobs.beginRequest(requested, requester);
+        CraftingJob previous = CraftingJobs.enter(job);
+        LinkedLogisticsOrderList list;
+        try {
+            list = tree.fullFillAll();
+        } finally {
+            CraftingJobs.exit(previous);
+        }
+        List<LinkedLogisticsOrderList> rootLevels = itemsOneLevelDown ? list.getSubOrders()
+                : Collections.singletonList(list);
+        CraftingJobs.endRequest(job, joined, rootLevels);
+        return list;
+    }
+
+    private static IRouter routerOf(IRequest requester) {
+        return requester == null ? null : requester.getRouter();
     }
 
     public void sendMissingMessage(RequestLog log) {
@@ -170,7 +202,9 @@ public class RequestTree extends RequestTreeNode {
             isDone = isDone && node.isDone();
         }
         if (isDone) {
-            LinkedLogisticsOrderList list = tree.fullFillAll();
+            // The root here is a placeholder with one child per requested item, so each item's own orders are one
+            // level down.
+            LinkedLogisticsOrderList list = fullFillAsJob(tree, items, routerOf(requester), true);
             if (log != null) {
                 log.handleSucessfullRequestOfList(RequestTreeNode.shrinkToList(messages), list);
             }
@@ -189,7 +223,11 @@ public class RequestTree extends RequestTreeNode {
         ItemResource req = new ItemResource(item, requester);
         RequestTree tree = new RequestTree(req, null, requestFlags, info);
         if (!simulateOnly && (tree.isDone() || ((tree.getPromiseAmount() > 0) && acceptPartial))) {
-            LinkedLogisticsOrderList list = tree.fullFillAll();
+            LinkedLogisticsOrderList list = fullFillAsJob(
+                    tree,
+                    Collections.singletonList(item.clone()),
+                    routerOf(requester),
+                    false);
             if (log != null) {
                 log.handleSucessfullRequestOf(req.copyForDisplayWith(item.getStackSize()), list);
             }
@@ -241,7 +279,11 @@ public class RequestTree extends RequestTreeNode {
         FluidResource req = new FluidResource(liquid, amount, pipe);
         RequestTree request = new RequestTree(req, null, RequestTree.defaultRequestFlags, null);
         if (request.isDone() || acceptPartial) {
-            request.fullFill();
+            fullFillAsJob(
+                    request,
+                    Collections.singletonList(liquid.getItemIdentifier().makeStack(amount)),
+                    routerOf(pipe),
+                    false);
             if (log != null) {
                 log.handleSucessfullRequestOf(req.copyForDisplayWith(req.getRequestedAmount()), null);
             }

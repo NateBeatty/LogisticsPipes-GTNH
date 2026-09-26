@@ -1,7 +1,9 @@
 package logisticspipes.routing.order;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
@@ -43,6 +45,52 @@ public abstract class LogisticsOrder implements IOrderInfoProvider {
     private byte machineProgress = 0;
 
     private final List<IDistanceTracker> trackers = new CopyOnWriteArrayList<>();
+
+    /** The request this order was made for, or null if it was made outside one. Server side only. */
+    @Getter
+    @Setter
+    private CraftingJob job;
+
+    /** Set once {@link CraftingJobs} has counted this order out, so no path can count it twice. */
+    boolean closed;
+
+    /** Whether this order delivers the job's requested item itself, rather than an ingredient on the way to it. */
+    @Getter
+    @Setter
+    private boolean root;
+
+    /** When this order last sent anything, in {@link CraftingJobs#now()} ticks. Starts at creation. */
+    @Getter
+    @Setter
+    private long lastProgressTick;
+
+    /**
+     * The jobs whose surplus this order was planned from, and how much from each. Set when a request spends another
+     * job's extras, so cancelling that job can plan this part again instead of leaving it waiting for a set that will
+     * never be made. Null when nothing was borrowed.
+     */
+    private Map<CraftingJob, Integer> borrowed;
+
+    public void addBorrowed(Map<CraftingJob, Integer> from) {
+        if (from == null || from.isEmpty()) {
+            return;
+        }
+        if (borrowed == null) {
+            borrowed = new HashMap<>();
+        }
+        for (Map.Entry<CraftingJob, Integer> entry : from.entrySet()) {
+            borrowed.merge(entry.getKey(), entry.getValue(), Integer::sum);
+        }
+    }
+
+    /** How much of this order came from the given job's surplus. */
+    public int getBorrowedFrom(CraftingJob job) {
+        if (borrowed == null) {
+            return 0;
+        }
+        Integer amount = borrowed.get(job);
+        return amount == null ? 0 : amount;
+    }
 
     public LogisticsOrder(ResourceType type, IAdditionalTargetInformation info) {
         if (type == null) {
