@@ -17,6 +17,8 @@ public final class SinkReply {
         PassiveSupplier,
         ElectricBuffer,
         ElectricManager,
+        /** Appended, not inserted: these are compared by ordinal, so the existing order must not move. */
+        CraftingBuffer,
     }
 
     public enum BufferMode {

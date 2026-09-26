@@ -2,6 +2,7 @@ package logisticspipes.modules;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -107,6 +108,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * ingredients are left in the machine. Covers results that never come back to this module.
      */
     private static final int STUCK_TICKS = 400;
+    /**
+     * How long to leave a machine alone while waiting for an ingredient another crafter has to make, before assuming
+     * the guess was wrong and going ahead.
+     */
+    private static final int INTERMEDIATE_WAIT_TICKS = 200;
     /** Upper limit on stacks pulled out in one sweep, so a huge leftover pile can't flood the network at once. */
     private static final int MAX_SWEEP_STACKS = 64;
     /** How often results no order is waiting for are cleared out of the machine. */
@@ -207,6 +213,139 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
             outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
             outputChance[i] = GUARANTEED;
+        }
+    }
+
+    /* Buffers */
+
+    /** Every loaded Smart Crafter, so a buffer can ask what is worth holding without walking the routing table. */
+    public static final Set<ModuleSmartCrafter> AllCrafters = new HashSet<>();
+
+    /** Called on server shutdown, as the satellite registry is. */
+    public static void cleanupCrafters() {
+        ModuleSmartCrafter.AllCrafters.clear();
+    }
+
+    /**
+     * The ingredients this module would take from a buffer: its gated item slots, i.e. the ones delivered to its own
+     * machine. Fluids and satellite-routed slots go their own way and never sit in a buffer.
+     */
+    public Set<ItemIdentifier> getIntermediates() {
+        Set<ItemIdentifier> items = new HashSet<>();
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot)) {
+                items.add(getMaterials(slot).getItem());
+            }
+        }
+        return items;
+    }
+
+    /**
+     * A buffer has taken in something; look again next tick if this module uses it. The gate still decides whether
+     * anything can be done about it - this only saves waiting for the safety net to notice.
+     */
+    public void onBufferStockArrived(ItemIdentifier item) {
+        if (gateDirty) {
+            return;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+                gateDirty = true;
+                return;
+            }
+        }
+    }
+
+    /**
+     * Whether this module is working on a recipe that uses this item, so a buffer should hold it rather than refuse.
+     */
+    public boolean wantsIntermediate(ItemIdentifier item) {
+        if (!hasWork()) {
+            return false;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sends a result to a buffer when the crafter that ordered it can't take it yet, and holds it in the machine when
+     * no buffer will have it. Pushing it at a machine that isn't ready is what makes items bounce, and bouncing is what
+     * this module exists to stop.
+     */
+    @Override
+    protected ResultRoute routeForResult(LogisticsItemOrder order) {
+        ResultRoute route = chooseResultRoute(order);
+        LogisticsPipes.log.info(
+                "[Buffer DEBUG] result " + order.getResource()
+                        .getItem() + " -> " + route + " (buffers=" + ModuleCraftingBuffer.AllBuffers.size() + ")");
+        return route;
+    }
+
+    private ResultRoute chooseResultRoute(LogisticsItemOrder order) {
+        if (order.getDestination() == null || destinationCanTake(order)) {
+            return ResultRoute.TO_ORDER;
+        }
+        ItemIdentifier result = order.getResource().getItem();
+        return bufferWithRoomFor(result) != null ? ResultRoute.TO_BUFFER : ResultRoute.HOLD;
+    }
+
+    /** Whether the crafter this result is for has its gate open. Anything that isn't gated is assumed ready. */
+    private boolean destinationCanTake(LogisticsItemOrder order) {
+        IRouter router = order.getDestination().getRouter();
+        if (router == null) {
+            return true;
+        }
+        IGatedItemSink gate = IGatedItemSink.findTarget(router, order.getInformation());
+        return gate == null || gate.getGatedAllowance(order.getResource().getItem(), order.getInformation()) > 0;
+    }
+
+    private ModuleCraftingBuffer bufferWithRoomFor(ItemIdentifier item) {
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            if (buffer.hasRoomFor(item, 1)) {
+                return buffer;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Takes what the buffers are holding for this set. Buffered intermediates have no provider to ask, so unlike raw
+     * materials they have to be pulled: the gate opening alone would never move them.
+     */
+    private void pullFromBuffers(int slot, int wanted) {
+        if (wanted <= 0 || ModuleCraftingBuffer.AllBuffers.isEmpty()) {
+            return;
+        }
+        ItemIdentifier item = getMaterials(slot).getItem();
+        int left = wanted;
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            if (left <= 0) {
+                break;
+            }
+            LogisticsPipes.log.info(
+                    "[Buffer DEBUG] pull slot " + slot
+                            + " want "
+                            + left
+                            + " of "
+                            + item
+                            + ", buffer holds "
+                            + buffer.getAvailable(item));
+            int sent = buffer.sendTo(
+                    item,
+                    left,
+                    getRouter().getSimpleID(),
+                    new CraftingChassieInformation(slot, getPositionInt()));
+            LogisticsPipes.log.info("[Buffer DEBUG] pull sent " + sent);
+            if (sent > 0) {
+                left -= sent;
+                allowance[slot] = Math.max(0, allowance[slot] - sent);
+                inFlight[slot] += sent;
+                lastProgressTick = now();
+            }
         }
     }
 
@@ -345,9 +484,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /** Whether this module has a job of its own, of either kind. */
+    /**
+     * Deliberately iterates rather than calling {@code hasOrders}: that goes through {@code peekAtTopRequest}, which
+     * marks an order in progress and rotates the queue looking for a matching type. Harmless on this module's own tick,
+     * but this is also reached from a buffer deciding whether to accept an item, i.e. from the routing path of a
+     * completely different pipe, where quietly reordering someone's order queue is the last thing we want.
+     */
     private boolean hasWork() {
-        return _service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)
-                || (fluidOrders != null && getFluidOrders().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA));
+        for (LogisticsItemOrder order : _service.getItemOrderManager()) {
+            if (order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA) {
+                return true;
+            }
+        }
+        if (fluidOrders != null) {
+            for (LogisticsFluidOrder order : getFluidOrders()) {
+                if (order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -1118,6 +1274,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 gateDirty = true;
             }
         }
+        if (!registered) {
+            ModuleSmartCrafter.AllCrafters.add(this);
+            registered = true;
+        }
         if (gateDirty || _service.isNthTick(SAFETY_NET_TICKS)) {
             updateGate();
         }
@@ -1169,9 +1329,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
     @Override
     public void onAllowedRemoval() {
         super.onAllowedRemoval();
+        ModuleSmartCrafter.AllCrafters.remove(this);
+        registered = false;
         releaseClaim();
         stopWaiting();
     }
+
+    private boolean registered = false;
 
     /** Called by {@link MachineClaims} when the machine this module waited for is handed to it. */
     void onClaimGranted(MachineClaims.Key machine) {
@@ -1363,7 +1527,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         giveUpStuckSets();
 
         int toRelease = Math.min(wanted, MAX_SETS_IN_FLIGHT) - setsReleased;
-        if (toRelease > 0 && mayReleaseSets()) {
+        if (toRelease > 0 && waitedLongEnoughForIntermediates() && mayReleaseSets()) {
             if (sweepBeforeRelease) {
                 // First release since taking the machine: anything of this recipe still in it is stale (left over from
                 // before a restart, or from a job that didn't finish cleanly). Clear it so the room check sees the
@@ -1380,6 +1544,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
 
+        // Take anything of ours out of the buffers, but only while this module holds the machine. A set that was
+        // already released can still be short - its ingredient may have reached a buffer afterwards, and nothing else
+        // would ever move it - so this can't wait for the next release. It must still respect the claim: pulling into
+        // a machine another crafter is working in is exactly the ingredient mixing the claim exists to prevent.
+        for (int slot = 0; claimedMachine != null && !ModuleCraftingBuffer.AllBuffers.isEmpty()
+                && slot < INGREDIENT_SLOTS; slot++) {
+            if (!isGatedSlot(slot)) {
+                continue;
+            }
+            ItemIdentifierStack material = getMaterials(slot);
+            // Buffer stock first: it is the cheaper question, and asking it avoids scanning the machine for every
+            // ingredient slot only to find there was nothing to fetch.
+            if (bufferStock(material.getItem()) <= 0) {
+                continue;
+            }
+            int needed = wanted * material.getStackSize() - inFlight[slot] - machineStock(material.getItem());
+            if (needed > 0) {
+                pullFromBuffers(slot, needed);
+            }
+        }
+
         // Hand the machine over once the sets in it are done, if someone else is waiting for it. An owner that
         // couldn't release anything (machine blocked) keeps it for a while first, so two blocked crafters don't pass it
         // back and forth every tick.
@@ -1390,7 +1575,104 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
             releaseClaim();
             gateDirty = true; // queue up again behind the crafter that is waiting
+        } else if (claimedMachine != null && isBlockedWaitingForIngredients()
+                && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
+                    // Holding the machine and getting nothing, while someone else wants it. The allowance goes back
+                    // too, so
+                    // providers stop sending into a machine this module no longer owns. Without this a crafter whose
+                    // ingredient can only come from the very crafter it is blocking would hold on for ever.
+                    for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+                        allowance[slot] = 0;
+                    }
+                    setsReleased = 0;
+                    clearResultProgress();
+                    releaseClaim();
+                    gateDirty = true;
+                }
+    }
+
+    /**
+     * Whether every ingredient that <b>another crafter has to make</b> is already on hand: in a buffer, on its way
+     * here, or sitting in the machine. Raw materials are taken on trust, because the planner already found a source for
+     * them and a provider only sends once the gate opens - waiting for those would deadlock against ourselves.
+     * <p>
+     * This is what stops a crafter seizing a machine on the strength of having an order. Two recipes on one machine,
+     * where one makes the other's ingredient, used to deadlock outright: the second crafter claimed the machine,
+     * released a set, and waited forever for an ingredient the first could no longer make, because it could never get
+     * the machine. Its allowance stayed outstanding, so the stuck-set rule never fired either.
+     */
+    private boolean intermediatesReady() {
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isGatedSlot(slot)) {
+                continue;
+            }
+            ItemIdentifierStack material = getMaterials(slot);
+            ItemIdentifier item = material.getItem();
+            if (!isCraftedByAnother(item)) {
+                continue;
+            }
+            int onHand = inFlight[slot] + bufferStock(item) + machineStock(item);
+            if (onHand < material.getStackSize()) {
+                return false;
+            }
         }
+        return true;
+    }
+
+    /**
+     * Yields the machine while an intermediate is missing, but not for ever.
+     * <p>
+     * The readiness test can be wrong in one direction: an item another crafter makes may *also* be sitting in storage,
+     * in which case the planner sourced it from a provider and it will only move once the gate opens. Waiting on it
+     * would stall a craft that was never blocked. So after {@link #INTERMEDIATE_WAIT_TICKS} the crafter goes ahead
+     * anyway, and the handover rule below takes over if that turns out to be the wrong guess.
+     */
+    private boolean waitedLongEnoughForIntermediates() {
+        if (intermediatesReady()) {
+            waitingForIntermediatesSince = 0;
+            return true;
+        }
+        if (waitingForIntermediatesSince == 0) {
+            waitingForIntermediatesSince = now();
+        }
+        return now() - waitingForIntermediatesSince >= INTERMEDIATE_WAIT_TICKS;
+    }
+
+    private long waitingForIntermediatesSince = 0;
+
+    /**
+     * Whether some other loaded Smart Crafter makes this item, i.e. it is an intermediate rather than a raw material.
+     */
+    private boolean isCraftedByAnother(ItemIdentifier item) {
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter == this) {
+                continue;
+            }
+            for (ItemIdentifierStack result : crafter.getConfiguredCraftResults()) {
+                if (result.getItem().equals(item)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private int bufferStock(ItemIdentifier item) {
+        int total = 0;
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            total += buffer.getAvailable(item);
+        }
+        return total;
+    }
+
+    private int machineStock(ItemIdentifier item) {
+        IInventory inv = _service.getRealInventory();
+        if (inv == null) {
+            return 0;
+        }
+        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
+                .getInventoryUtil(inv, _service.inventoryOrientation());
+        return util == null ? 0 : util.itemCount(item);
     }
 
     /**
@@ -1428,6 +1710,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // A set from "Request set" is finished once its ingredients are delivered: it exists to hand the machine one
         // more set, so no result is expected and none is taken back out. Only ordered sets are counted as in flight.
         setsReleased += sets - manual;
+        // Anything the buffers are already holding for this recipe comes now; the rest is left to the providers.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedSlot(slot)) {
+                pullFromBuffers(slot, sets * getMaterials(slot).getStackSize());
+            }
+        }
         releasedThisTurn = true;
         lastProgressTick = now();
     }
@@ -1452,6 +1740,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         setsReleased = 0;
         clearResultProgress();
+    }
+
+    /** Sets are out, nothing is on its way, and nothing has happened for a while: the ingredients are not coming. */
+    private boolean isBlockedWaitingForIngredients() {
+        return setsReleased > 0 && nothingInFlight() && now() - lastProgressTick >= STUCK_TICKS;
     }
 
     /**

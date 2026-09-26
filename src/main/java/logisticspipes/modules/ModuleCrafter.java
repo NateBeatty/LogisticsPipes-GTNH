@@ -1443,6 +1443,13 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     .peekAtTopRequest(ResourceType.CRAFTING, ResourceType.EXTRA); // fetch but not remove.
             int maxtosend = Math.min(itemsleft, nextOrder.getResource().stack.getStackSize());
             maxtosend = Math.min(nextOrder.getResource().getItem().getMaxStackSize(), maxtosend);
+            // Decided before extracting, not after: with nowhere to put the result, leaving it in the machine is
+            // backpressure the player can see, where pulling it out first would only make it bounce.
+            ResultRoute route = routeForResult(nextOrder);
+            if (route == ResultRoute.HOLD) {
+                _service.getItemOrderManager().deferSend();
+                break;
+            }
             // retrieve the new crafted items
             ItemStack extracted = null;
             AdjacentTile tile = null;
@@ -1494,7 +1501,12 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 stacksleft -= 1;
                 itemsleft -= numtosend;
                 ItemStack stackToSend = extracted.splitStack(numtosend);
-                if (nextOrder.getDestination() != null) {
+                if (route == ResultRoute.TO_BUFFER) {
+                    // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
+                    // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
+                    _service.sendStack(stackToSend, -1, ItemSendMode.Normal, nextOrder.getInformation());
+                    _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
+                } else if (nextOrder.getDestination() != null) {
                     SinkReply reply = LogisticsManager.canSink(
                             nextOrder.getDestination().getRouter(),
                             null,
@@ -1521,6 +1533,24 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 }
             }
         }
+    }
+
+    /** Where a finished result should go. */
+    protected enum ResultRoute {
+        /** Straight to whoever ordered it, as the crafter has always done. */
+        TO_ORDER,
+        /** To a crafting buffer, to wait until the destination can use it. */
+        TO_BUFFER,
+        /** Nowhere yet: leave it in the machine and try again later. */
+        HOLD
+    }
+
+    /**
+     * Lets a subclass divert a result that the destination can't take yet. The base always sends to the order, which is
+     * what the crafter has always done.
+     */
+    protected ResultRoute routeForResult(LogisticsItemOrder order) {
+        return ResultRoute.TO_ORDER;
     }
 
     /**

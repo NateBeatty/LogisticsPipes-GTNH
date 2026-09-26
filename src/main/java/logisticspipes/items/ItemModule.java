@@ -37,6 +37,7 @@ import logisticspipes.modules.ModuleCCBasedQuickSort;
 import logisticspipes.modules.ModuleCrafter;
 import logisticspipes.modules.ModuleCrafterMK2;
 import logisticspipes.modules.ModuleCrafterMK3;
+import logisticspipes.modules.ModuleCraftingBuffer;
 import logisticspipes.modules.ModuleCreativeTabBasedItemSink;
 import logisticspipes.modules.ModuleElectricBuffer;
 import logisticspipes.modules.ModuleElectricManager;
@@ -115,6 +116,7 @@ public class ItemModule extends LogisticsItem {
     public static final int CRAFTER_MK2 = 601;
     public static final int CRAFTER_MK3 = 602;
     public static final int SMART_CRAFTER = 603;
+    public static final int CRAFTING_BUFFER = 604;
 
     private final List<Module> modules = new ArrayList<>();
 
@@ -206,6 +208,7 @@ public class ItemModule extends LogisticsItem {
         registerModule(ItemModule.CRAFTER_MK2, ModuleCrafterMK2.class);
         registerModule(ItemModule.CRAFTER_MK3, ModuleCrafterMK3.class);
         registerModule(ItemModule.SMART_CRAFTER, ModuleSmartCrafter.class);
+        registerModule(ItemModule.CRAFTING_BUFFER, ModuleCraftingBuffer.class);
         registerModule(ItemModule.ACTIVE_SUPPLIER, ModuleActiveSupplier.class);
         registerModule(ItemModule.CREATIVETABBASEDITEMSINK, ModuleCreativeTabBasedItemSink.class);
 
