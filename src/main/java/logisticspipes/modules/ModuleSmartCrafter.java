@@ -1460,7 +1460,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /** Worked out when asked; nothing is kept up to date for it. Server side. */
     public CrafterState getCrafterState() {
-        if (_service == null || !hasWork()) {
+        if (_service == null || !recipeHasWork()) {
             return CrafterState.IDLE;
         }
         if (_service.getRealInventory() == null || setTooLarge || resultHeld) {
@@ -1570,10 +1570,71 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     @Override
     protected void onResultExtracted(ItemIdentifier item, int amount) {
-        int output = outputIndexFor(item);
-        if (output >= 0) {
-            creditSets(output, amount);
+        ModuleSmartCrafter owner = resultOwner(item);
+        if (owner != null) {
+            owner.creditSets(owner.outputIndexFor(item), amount);
         }
+    }
+
+    /**
+     * The Smart Crafter whose recipe made a result this module just pulled out, which is often not this one.
+     * <p>
+     * All modules in a chassis face the same machine and share one order queue, so whichever module's tick reaches an
+     * order first extracts its result. Credit has to go to the recipe that made it: otherwise that recipe never sees
+     * its sets finish, its progress clock stands still, and after {@link #STUCK_TICKS} it thinks it is blocked and
+     * hands the machine over mid-job. Among recipes making the same item, the one holding the machine or with sets out
+     * wins.
+     */
+    private ModuleSmartCrafter resultOwner(ItemIdentifier item) {
+        boolean ours = outputIndexFor(item) >= 0;
+        if (ours && (claimedMachine != null || setsReleased > 0)) {
+            return this;
+        }
+        ModuleSmartCrafter fallback = ours ? this : null;
+        MachineClaims.Key machine = _service == null ? null : machineKey();
+        if (machine == null) {
+            return fallback;
+        }
+        for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
+            if (other == this || other._service == null
+                    || other.getWorld() == null
+                    || other.outputIndexFor(item) < 0
+                    || !machine.equals(other.machineKey())) {
+                continue;
+            }
+            if (other.claimedMachine != null || other.setsReleased > 0) {
+                return other;
+            }
+            if (fallback == null) {
+                fallback = other;
+            }
+        }
+        return fallback;
+    }
+
+    /**
+     * Whether this module's own recipe still has something to make: sets out, orders for its outputs, or fluid orders
+     * of its own. {@link #hasWork} can't tell modules apart, since a chassis's item order queue is shared by all of its
+     * modules and any module's order makes every one of them look busy.
+     */
+    private boolean recipeHasWork() {
+        if (setsReleased > 0 || pendingManualSets > 0) {
+            return true;
+        }
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (output != null && outstandingResults(output) > 0) {
+                return true;
+            }
+        }
+        if (fluidOrders != null) {
+            for (LogisticsFluidOrder order : getFluidOrders()) {
+                if (order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -2202,24 +2263,32 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * Cleanup setting. Only Smart Crafter recipes are touched: an ordinary crafting module takes no claim, so it could
      * be mid-craft on this machine. A result some order is still waiting for is left in place: its crafter extracts it
      * for that order, and sending it to storage would strand the order.
+     * <p>
+     * A recipe that still has work (this module's included, since it only claimed because it has a job) keeps its
+     * ingredients: it handed the machine over or is taking it back mid-job, those ingredients were delivered for that
+     * job, and no provider would send them again. Only a recipe with nothing left to make (a cancelled or finished job)
+     * has its ingredients cleared.
      */
     private void sweepAllRecipesOnMachine() {
         MachineClaims.Key machine = claimedMachine;
         if (machine == null) {
             return;
         }
-        sweepLeftovers();
+        sweepLeftovers(!recipeHasWork());
         for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
             if (other != this && other._service != null
                     && other.getWorld() != null
                     && machine.equals(other.machineKey())) {
-                other.sweepLeftovers();
+                other.sweepLeftovers(!other.recipeHasWork());
             }
         }
     }
 
-    /** This recipe's part of {@link #sweepAllRecipesOnMachine}. */
-    private void sweepLeftovers() {
+    /**
+     * This recipe's part of {@link #sweepAllRecipesOnMachine}: results no order is waiting for, and its ingredients too
+     * if asked.
+     */
+    private void sweepLeftovers(boolean ingredientsToo) {
         IInventory inv = _service.getRealInventory();
         if (!cleanupEnabled || inv == null) {
             return;
@@ -2231,7 +2300,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
             }
         }
-        stacks += sweepIngredients(inv, MAX_SWEEP_STACKS - stacks);
+        if (ingredientsToo) {
+            stacks += sweepIngredients(inv, MAX_SWEEP_STACKS - stacks);
+        }
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }

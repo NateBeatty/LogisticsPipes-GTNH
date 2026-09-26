@@ -559,8 +559,9 @@ gui.pipecontroller.Relayed=Relayed
 gui.pipecontroller.RoutingTableSize=RoutingTableSize
 
 gui.networkstatistics.amount=Track amount
-gui.networkstatistics.crafting=View active crafting tasks
+gui.networkstatistics.crafting=Items being crafted
 gui.networkstatistics.gettasks=Acquire tasks
+gui.networkstatistics.jobs=Crafting requests
 gui.networkstatistics.add.alreadytracked=This item type is already tracked
 gui.networkstatistics.ItemDisplay=Page %s / %s
 

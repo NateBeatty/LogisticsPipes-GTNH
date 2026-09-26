@@ -59,6 +59,14 @@ public abstract class LogisticsOrder implements IOrderInfoProvider {
     @Setter
     private boolean root;
 
+    /**
+     * How much this order was for when it was created, so progress can be shown as "12/64". Lowered when part of the
+     * order is dropped (a re-plan), since that part is no longer owed.
+     */
+    @Getter
+    @Setter
+    private int initialAmount;
+
     /** When this order last sent anything, in {@link CraftingJobs#now()} ticks. Starts at creation. */
     @Getter
     @Setter

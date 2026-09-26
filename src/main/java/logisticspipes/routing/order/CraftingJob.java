@@ -1,13 +1,19 @@
 package logisticspipes.routing.order;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 import logisticspipes.modules.ModuleSmartCrafter;
+import logisticspipes.network.LPDataInputStream;
+import logisticspipes.network.LPDataOutputStream;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -203,31 +209,87 @@ public class CraftingJob {
             this.replanned = replanned;
             this.shortJobs = shortJobs;
         }
+
+        /** The chat lines telling the player what the cancel did. Shared by every place a job can be cancelled from. */
+        public List<String> describe() {
+            List<String> lines = new ArrayList<>();
+            lines.add(
+                    "Cancelled: stopped " + crafts
+                            + " craft(s) and "
+                            + deliveries
+                            + " delivery(ies). Items already moving will still arrive.");
+            if (replanned > 0) {
+                lines.add(
+                        replanned + " order(s) in other requests used this request's surplus and were planned again.");
+            }
+            for (CraftingJob other : shortJobs) {
+                lines.add(
+                        "Request #" + other.getId()
+                                + " couldn't be fully re-planned from what the network has, and will wait until cancelled.");
+            }
+            return lines;
+        }
     }
 
     /**
      * The orders still open, longest without progress first. This is what the job is waiting on. Worked out only when
      * asked, never kept up to date.
+     * <p>
+     * Orders for the same item on the same pipe are shown as one: the planner makes one order per planning pass, so a
+     * craft it could only partly cover at first (8 ingots in stock, the rest smelted) becomes two orders on one
+     * crafter, which to the player is one piece of work. A merged row is idle only as long as its most recently active
+     * part.
      */
     public List<WaitingOn> getWaitingOn() {
         long now = CraftingJobs.now();
-        List<WaitingOn> list = new ArrayList<>();
+        Map<List<Object>, WaitingOn> merged = new LinkedHashMap<>();
         for (Placed placed : orders) {
             LogisticsOrder order = placed.order;
             if (order.isFinished() || !keepsJobOpen(order)) {
                 continue;
             }
             ItemIdentifierStack display = order.getAsDisplayItem();
-            list.add(
-                    new WaitingOn(
-                            order.getType(),
-                            display == null ? null : display.clone(),
-                            placed.manager.getPosition(),
-                            now - order.getLastProgressTick(),
-                            order.isRoot()));
+            int required = order.getInitialAmount();
+            WaitingOn row = new WaitingOn(
+                    order.getType(),
+                    display == null ? null : display.clone(),
+                    placed.manager.getPosition(),
+                    now - order.getLastProgressTick(),
+                    order.isRoot(),
+                    Math.max(0, required - Math.max(0, order.getAmount())),
+                    required);
+            List<Object> key = Arrays
+                    .asList(placed.manager, order.getType(), display == null ? null : display.getItem());
+            merged.merge(key, row, WaitingOn::combine);
         }
+        List<WaitingOn> list = new ArrayList<>(merged.values());
         list.sort((a, b) -> Long.compare(b.idleTicks, a.idleTicks));
         return list;
+    }
+
+    /**
+     * Crafted so far and to craft in total, over every item craft this job planned, finished ones included: for 64
+     * foils made from 16 plates, "0/80" at the start. Fluid crafts are left out, since litres added to item counts mean
+     * nothing, and so are deliveries from storage, which aren't crafting.
+     *
+     * @return {done, required}
+     */
+    public int[] getCraftedProgress() {
+        int done = 0;
+        int required = 0;
+        for (Placed placed : orders) {
+            LogisticsOrder order = placed.order;
+            if (order.getType() != ResourceType.CRAFTING || !(order instanceof LogisticsItemOrder)) {
+                continue;
+            }
+            int initial = order.getInitialAmount();
+            int sent = Math.max(0, initial - Math.max(0, order.getAmount()));
+            done += sent;
+            // A closed order counts only what it sent: one that failed or was dropped part-way leaves the rest to its
+            // replacement (a re-request joins this job with its own order), which must not be counted twice.
+            required += order.isFinished() ? sent : initial;
+        }
+        return new int[] { done, required };
     }
 
     /** An order together with the queue it sits in, which an order doesn't know by itself. */
@@ -253,13 +315,78 @@ public class CraftingJob {
         private final LPPosition position;
         private final long idleTicks;
         private final boolean root;
+        /** How much of the order has been sent: crafted and sent on for a crafter, delivered for a provider. */
+        private final int done;
+        /** How much the order was for. */
+        private final int required;
 
-        WaitingOn(ResourceType type, ItemIdentifierStack item, LPPosition position, long idleTicks, boolean root) {
+        WaitingOn(ResourceType type, ItemIdentifierStack item, LPPosition position, long idleTicks, boolean root,
+                int done, int required) {
             this.type = type;
             this.item = item;
             this.position = position;
             this.idleTicks = idleTicks;
             this.root = root;
+            this.done = done;
+            this.required = required;
         }
+
+        /** Two orders for the same item on the same pipe, shown as one row. */
+        static WaitingOn combine(WaitingOn a, WaitingOn b) {
+            ItemIdentifierStack item = a.item;
+            if (a.item != null && b.item != null) {
+                item = a.item.clone();
+                item.setStackSize(a.item.getStackSize() + b.item.getStackSize());
+            }
+            return new WaitingOn(
+                    a.type,
+                    item,
+                    a.position,
+                    Math.min(a.idleTicks, b.idleTicks),
+                    a.root || b.root,
+                    a.done + b.done,
+                    a.required + b.required);
+        }
+
+        public void write(LPDataOutputStream data) throws IOException {
+            data.writeByte(type.ordinal());
+            data.writeBoolean(item != null);
+            if (item != null) {
+                data.writeItemIdentifierStack(item);
+            }
+            data.writeBoolean(position != null);
+            if (position != null) {
+                data.writeLPPosition(position);
+            }
+            data.writeLong(idleTicks);
+            data.writeBoolean(root);
+            data.writeInt(done);
+            data.writeInt(required);
+        }
+
+        public static WaitingOn read(LPDataInputStream data) throws IOException {
+            ResourceType type = ResourceType.values()[data.readByte()];
+            ItemIdentifierStack item = data.readBoolean() ? data.readItemIdentifierStack() : null;
+            LPPosition position = data.readBoolean() ? data.readLPPosition() : null;
+            return new WaitingOn(
+                    type,
+                    item,
+                    position,
+                    data.readLong(),
+                    data.readBoolean(),
+                    data.readInt(),
+                    data.readInt());
+        }
+    }
+
+    /** How many of this job's orders of a type are still open. */
+    public int countOpen(ResourceType type) {
+        int count = 0;
+        for (Placed placed : orders) {
+            if (!placed.order.isFinished() && placed.order.getType() == type) {
+                count++;
+            }
+        }
+        return count;
     }
 }

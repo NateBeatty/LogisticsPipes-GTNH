@@ -48,23 +48,8 @@ public class CancelWatchedRequestPacket extends IntegerCoordinatesPacket {
             say(player, "That request has already finished.");
             return;
         }
-        say(
-                player,
-                "Cancelled: stopped " + result.getCrafts()
-                        + " craft(s) and "
-                        + result.getDeliveries()
-                        + " delivery(ies). Items already moving will still arrive.");
-        if (result.getReplanned() > 0) {
-            say(
-                    player,
-                    result.getReplanned()
-                            + " order(s) in other requests used this request's surplus and were planned again.");
-        }
-        for (CraftingJob other : result.getShortJobs()) {
-            say(
-                    player,
-                    "Request #" + other.getId()
-                            + " couldn't be fully re-planned from what the network has, and will wait until cancelled.");
+        for (String line : result.describe()) {
+            say(player, line);
         }
     }
 

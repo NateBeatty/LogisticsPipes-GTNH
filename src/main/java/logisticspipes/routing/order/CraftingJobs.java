@@ -4,13 +4,17 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import logisticspipes.LogisticsPipes;
 import logisticspipes.modules.ModuleSmartCrafter;
+import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.RequestTree;
+import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -105,6 +109,31 @@ public final class CraftingJobs {
         return null;
     }
 
+    /**
+     * Live crafting jobs requested from the network this router is on, oldest first. A job whose requester is on
+     * another network (or no longer exists) is left out, so one player's table can't see or cancel another network's
+     * requests.
+     */
+    public static List<CraftingJob> getLiveOn(IRouter router) {
+        List<CraftingJob> jobs = new ArrayList<>();
+        if (router == null || LIVE.isEmpty()) {
+            return jobs;
+        }
+        Set<Integer> network = new HashSet<>();
+        network.add(router.getSimpleID());
+        for (ExitRoute route : router.getIRoutersByCost()) {
+            if (route != null && route.destination != null) {
+                network.add(route.destination.getSimpleID());
+            }
+        }
+        for (CraftingJob job : LIVE.values()) {
+            if (network.contains(SimpleServiceLocator.routerManager.getIDforUUID(job.getRequesterId()))) {
+                jobs.add(job);
+            }
+        }
+        return jobs;
+    }
+
     /** Live jobs that craft something, oldest first. */
     public static Collection<CraftingJob> getLive() {
         return Collections.unmodifiableCollection(LIVE.values());
@@ -197,6 +226,7 @@ public final class CraftingJobs {
 
     static void orderAdded(LogisticsOrderManager<?, ?> manager, LogisticsOrder order) {
         order.setLastProgressTick(tick);
+        order.setInitialAmount(Math.max(0, order.getAmount()));
         if (isCraftedItem(order)) {
             add(ORDERED, itemOf(order), order.getAmount());
         }
@@ -223,9 +253,11 @@ public final class CraftingJobs {
     }
 
     static void orderShrunk(LogisticsOrder order, int amount) {
+        int dropped = Math.min(amount, Math.max(0, order.getAmount()));
         if (isCraftedItem(order)) {
-            add(ORDERED, itemOf(order), -Math.min(amount, Math.max(0, order.getAmount())));
+            add(ORDERED, itemOf(order), -dropped);
         }
+        order.setInitialAmount(Math.max(0, order.getInitialAmount() - dropped));
     }
 
     /** An order left its queue for good: done, failed, cancelled, or spent as another request's extra. */
@@ -250,11 +282,16 @@ public final class CraftingJobs {
 
     private static void ended(CraftingJob job) {
         if (LIVE.remove(job.getId()) != null) {
+            // A finished job's last state goes with it: the gui refreshes once a second, so the last list it got was
+            // usually taken just before the final items went out ("76/77 crafted" on a finished job). A cancelled job
+            // keeps what the gui last saw instead, i.e. how far it got before the cancel.
+            boolean cancelled = job.isCancelled();
             ENDED.add(
                     new Ended(
                             job.getId(),
-                            job.isCancelled() ? CraftingJob.End.CANCELLED : CraftingJob.End.FINISHED,
-                            tick));
+                            cancelled ? CraftingJob.End.CANCELLED : CraftingJob.End.FINISHED,
+                            tick,
+                            cancelled ? null : CraftingJobInfo.of(job)));
         }
     }
 
@@ -403,11 +440,14 @@ public final class CraftingJobs {
         public final int id;
         public final CraftingJob.End end;
         public final long tick;
+        /** The job's state when it finished, for the gui's "Done" row. Null for a cancelled job. */
+        public final CraftingJobInfo finalInfo;
 
-        Ended(int id, CraftingJob.End end, long tick) {
+        public Ended(int id, CraftingJob.End end, long tick, CraftingJobInfo finalInfo) {
             this.id = id;
             this.end = end;
             this.tick = tick;
+            this.finalInfo = finalInfo;
         }
     }
 }
