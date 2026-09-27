@@ -6,6 +6,7 @@ import logisticspipes.network.abstractpackets.CoordinatesPacket;
 import logisticspipes.network.abstractpackets.ModernPacket;
 import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.pipes.PipeItemsSatelliteLogistics;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 
 public class SatPipeNext extends CoordinatesPacket {
@@ -31,6 +32,9 @@ public class SatPipeNext extends CoordinatesPacket {
         }
         if (pipe.pipe instanceof PipeFluidSatellite) {
             ((PipeFluidSatellite) pipe.pipe).setNextId(player);
+        }
+        if (pipe.pipe instanceof PipeSmartSatellite) {
+            ((PipeSmartSatellite) pipe.pipe).setNextId(player);
         }
     }
 }

@@ -492,6 +492,8 @@ public class GuiSmartCrafter extends ModuleBaseGui {
             case ModuleSmartCrafter.STATUS_NO_PRODUCT:
             case ModuleSmartCrafter.STATUS_NO_MACHINE:
             case ModuleSmartCrafter.STATUS_SET_TOO_LARGE:
+            case ModuleSmartCrafter.STATUS_OUTPUT_PUSHES:
+            case ModuleSmartCrafter.STATUS_SATELLITE_OUTPUT_PUSHES:
                 colour = 0xFFAA0000;
                 break;
             case ModuleSmartCrafter.STATUS_WAITING_CLAIM:

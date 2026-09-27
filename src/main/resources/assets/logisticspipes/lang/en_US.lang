@@ -76,6 +76,12 @@ item.PipeItemsSatelliteLogistics.name=Satellite Logistics Pipe
 item.PipeItemsSatelliteLogistics.tip1=Type: Active request destination
 item.PipeItemsSatelliteLogistics.tip2= - A crafting pipe can send additional inputs here
 
+item.PipeSmartSatellite=Smart Satellite Pipe
+item.PipeSmartSatellite.name=Smart Satellite Pipe
+item.PipeSmartSatellite.tip1=Type: Smart Crafter satellite (items and fluids)
+item.PipeSmartSatellite.tip2= - Carries both items and fluids to the machine
+item.PipeSmartSatellite.tip3= - Wrench to assign a satellite ID
+
 item.PipeItemsSupplierLogistics=Supplier Logistics Pipe
 item.PipeItemsSupplierLogistics.name=Supplier Logistics Pipe
 item.PipeItemsSupplierLogistics.tip1=Type: Active item requester
@@ -425,6 +431,8 @@ gui.smartcrafter.status.4=A recipe set does not fit: machine full, too small, or
 gui.smartcrafter.status.5=Waiting for another crafter to release the machine
 gui.smartcrafter.status.6=Waiting for ingredients
 gui.smartcrafter.status.7=A fluid ingredient has nowhere to go - set a fluid satellite, or face a block that holds fluid
+gui.smartcrafter.status.8=An output bus/hatch here pushes results out by itself - soft-mallet it off
+gui.smartcrafter.status.9=An output bus/hatch at an output satellite pushes results out by itself - soft-mallet it off
 
 gui.firewall.Blocked=Blocked
 gui.firewall.Allowed=Allowed

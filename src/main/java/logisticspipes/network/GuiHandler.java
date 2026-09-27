@@ -35,6 +35,7 @@ import logisticspipes.pipes.PipeItemsRequestLogisticsMk2;
 import logisticspipes.pipes.PipeItemsSatelliteLogistics;
 import logisticspipes.pipes.PipeItemsSystemDestinationLogistics;
 import logisticspipes.pipes.PipeItemsSystemEntranceLogistics;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 import logisticspipes.proxy.MainProxy;
@@ -119,6 +120,9 @@ public class GuiHandler implements IGuiHandler {
                         return new DummyContainer(player.inventory, null);
                     }
                     if (pipe != null && pipe.pipe instanceof PipeFluidSatellite) {
+                        return new DummyContainer(player.inventory, null);
+                    }
+                    if (pipe != null && pipe.pipe instanceof PipeSmartSatellite) {
                         return new DummyContainer(player.inventory, null);
                     }
 
@@ -310,6 +314,9 @@ public class GuiHandler implements IGuiHandler {
                     }
                     if (pipe != null && pipe.pipe instanceof PipeFluidSatellite) {
                         return new GuiSatellitePipe((PipeFluidSatellite) pipe.pipe, player);
+                    }
+                    if (pipe != null && pipe.pipe instanceof PipeSmartSatellite) {
+                        return new GuiSatellitePipe((PipeSmartSatellite) pipe.pipe, player);
                     }
                     return null;
 

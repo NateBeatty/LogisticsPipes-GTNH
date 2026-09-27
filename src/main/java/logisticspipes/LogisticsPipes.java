@@ -98,6 +98,7 @@ import logisticspipes.pipes.PipeLogisticsChassiMk2;
 import logisticspipes.pipes.PipeLogisticsChassiMk3;
 import logisticspipes.pipes.PipeLogisticsChassiMk4;
 import logisticspipes.pipes.PipeLogisticsChassiMk5;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.pipes.basic.CoreUnroutedPipe;
 import logisticspipes.pipes.basic.LogisticsBlockGenericPipe;
@@ -255,6 +256,7 @@ public class LogisticsPipes {
     public static Item LogisticsFluidRequestPipe;
     public static Item LogisticsFluidProviderPipe;
     public static Item LogisticsFluidSatellitePipe;
+    public static Item LogisticsSmartSatellitePipe;
     public static Item LogisticsFluidSupplierPipeMk1;
     public static Item LogisticsFluidSupplierPipeMk2;
     public static Item LogisticsFluidInsertionPipe;
@@ -565,6 +567,7 @@ public class LogisticsPipes {
         HudUpdateTick.clearUpdateFlags();
         PipeItemsSatelliteLogistics.cleanup();
         PipeFluidSatellite.cleanup();
+        PipeSmartSatellite.cleanup();
         ModuleSmartCrafter.cleanupCrafters();
         ModuleCraftingBuffer.cleanup();
         CraftingJobs.clear();
@@ -683,6 +686,10 @@ public class LogisticsPipes {
         LogisticsPipes.LogisticsFluidSatellitePipe = createPipe(
                 PipeFluidSatellite.class,
                 "Logistics Fluid Satellite Pipe",
+                side);
+        LogisticsPipes.LogisticsSmartSatellitePipe = createPipe(
+                PipeSmartSatellite.class,
+                "Smart Satellite Pipe",
                 side);
         LogisticsPipes.LogisticsFluidSupplierPipeMk2 = createPipe(
                 PipeFluidSupplierMk2.class,

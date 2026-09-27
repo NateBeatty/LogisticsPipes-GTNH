@@ -10,6 +10,7 @@ import logisticspipes.network.abstractpackets.CoordinatesPacket;
 import logisticspipes.network.abstractpackets.ModernPacket;
 import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.pipes.PipeItemsSatelliteLogistics;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 import lombok.Getter;
 import lombok.Setter;
@@ -55,6 +56,9 @@ public class SatPipeSetID extends CoordinatesPacket {
         }
         if (pipe.pipe instanceof PipeFluidSatellite) {
             ((PipeFluidSatellite) pipe.pipe).setSatelliteId(getSatID());
+        }
+        if (pipe.pipe instanceof PipeSmartSatellite) {
+            ((PipeSmartSatellite) pipe.pipe).setSatelliteId(getSatID());
         }
     }
 }

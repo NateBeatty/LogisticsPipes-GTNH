@@ -98,6 +98,7 @@ public class Textures {
     public static TextureType LOGISTICSPIPE_LIQUID_REQUEST = Textures.empty;
     public static TextureType LOGISTICSPIPE_LIQUID_EXTRACTOR = Textures.empty;
     public static TextureType LOGISTICSPIPE_LIQUID_SATELLITE = Textures.empty;
+    public static TextureType LOGISTICSPIPE_SMART_SATELLITE = Textures.empty;
     public static TextureType LOGISTICSPIPE_OPAQUE_TEXTURE = Textures.empty;
 
     public static SmallTextureType LOGISTICSPIPE_BASIC_TRANSPORT_TEXTURE = Textures.smallEmpty;
@@ -151,6 +152,7 @@ public class Textures {
     public static String LOGISTICSPIPE_LIQUID_REQUEST_FILE = "pipes/liquid_request";
     public static String LOGISTICSPIPE_LIQUID_EXTRACTOR_FILE = "pipes/liquid_extractor";
     public static String LOGISTICSPIPE_LIQUID_SATELLITE_FILE = "pipes/liquid_satellite";
+    public static String LOGISTICSPIPE_SMART_SATELLITE_FILE = "pipes/smart_satellite";
 
     // Status overlay
     public static String LOGISTICSPIPE_ROUTED_TEXTURE_FILE = "pipes/status_overlay/routed";
@@ -331,6 +333,9 @@ public class Textures {
         Textures.LOGISTICSPIPE_LIQUID_SATELLITE = registerTexture(
                 par1IIconRegister,
                 Textures.LOGISTICSPIPE_LIQUID_SATELLITE_FILE);
+        Textures.LOGISTICSPIPE_SMART_SATELLITE = registerTexture(
+                par1IIconRegister,
+                Textures.LOGISTICSPIPE_SMART_SATELLITE_FILE);
 
         // Chassi
         Textures.LOGISTICSPIPE_CHASSI_ROUTED_TEXTURE = registerTexture(

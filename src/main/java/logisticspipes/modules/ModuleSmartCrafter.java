@@ -29,7 +29,6 @@ import logisticspipes.LogisticsPipes;
 import logisticspipes.config.Configs;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.ILPPositionProvider;
-import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.ICraftFluids;
 import logisticspipes.interfaces.routing.IFluidContainerReceiver;
@@ -48,6 +47,7 @@ import logisticspipes.network.guis.module.inpipe.SmartCrafterModuleSlot;
 import logisticspipes.network.packets.cpipe.SmartCrafterSetting;
 import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
 import logisticspipes.pipes.PipeFluidSatellite;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.FluidCraftingTemplate;
@@ -68,9 +68,11 @@ import logisticspipes.routing.order.LogisticsFluidOrder;
 import logisticspipes.routing.order.LogisticsFluidOrderManager;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.routing.order.LogisticsOrderManager;
+import logisticspipes.utils.AdjacentTile;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.FluidDisplayUtil;
 import logisticspipes.utils.FluidIdentifier;
+import logisticspipes.utils.OutputPushUtil;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
@@ -741,13 +743,52 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return true;
     }
 
-    /** The fluid satellite an ingredient slot is routed to, or null if its id is unset or can't be reached. */
+    /**
+     * The item satellite an ingredient slot is routed to, or null if its id is unset or can't be reached.
+     * <p>
+     * A normal item satellite is preferred; otherwise a Smart Satellite is matched too, so a plain (non-fluid)
+     * ingredient can be addressed to it the same way as to a normal item satellite. The Smart Satellite is a fluid
+     * type, but it carries a plain item to the machine it faces (see {@code PipeSmartSatellite#endReached}, which only
+     * handles fluid containers and lets everything else fall through to the machine inventory).
+     */
+    @Override
+    public IRouter getSatelliteRouter(int x) {
+        IRouter router = super.getSatelliteRouter(x);
+        if (router != null) {
+            return router;
+        }
+        int id = x == -1 ? satelliteId : advancedSatelliteIdArray[x];
+        if (id == 0) {
+            return null;
+        }
+        for (final PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
+            if (satellite.satelliteId == id && !satellite.stillNeedReplace() && satellite.getRouter() != null) {
+                return satellite.getRouter();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The fluid satellite an ingredient slot is routed to, or null if its id is unset or can't be reached. A normal
+     * fluid satellite is preferred; otherwise a Smart Satellite is matched too, so a fluid ingredient can be addressed
+     * to it the same way. The Smart Satellite pours the fluid into the machine it faces via the shared
+     * {@code FluidRoutedPipe} behaviour, exactly like a fluid satellite.
+     */
     private IRequestFluid fluidSatelliteFor(int slot) {
         int id = advancedSatelliteIdArray[slot];
         if (id == 0) {
             return null;
         }
         for (PipeFluidSatellite satellite : PipeFluidSatellite.AllSatellites) {
+            if (satellite.satelliteId != id || satellite.stillNeedReplace() || satellite.getRouter() == null) {
+                continue;
+            }
+            if (isReachable(satellite.getRouter())) {
+                return satellite;
+            }
+        }
+        for (PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
             if (satellite.satelliteId != id || satellite.stillNeedReplace() || satellite.getRouter() == null) {
                 continue;
             }
@@ -843,13 +884,54 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return outputChance[output] < GUARANTEED;
     }
 
-    /** See {@link #outputSatelliteId}: set by the player, not acted on yet. */
+    /** See {@link #outputSatelliteId}: read by {@link #resultSourcesFor} to pull this output from a satellite's machine. */
     public int getOutputSatelliteId(int output) {
         return outputSatelliteId[output];
     }
 
     public void setOutputSatelliteId(int output, int satelliteId) {
         outputSatelliteId[output] = Math.max(0, satelliteId);
+    }
+
+    /**
+     * Which machine the extraction loop pulls a finished result from. For an output addressed to a satellite, the result
+     * comes out of the machine that satellite faces and enters the network through the satellite; otherwise it comes
+     * from the machines the chassis faces, as always. The order and set accounting (see {@link #onResultExtracted})
+     * stays in the crafter either way.
+     */
+    @Override
+    protected List<AdjacentTile> resultSourcesFor(LogisticsItemOrder order, List<AdjacentTile> faced) {
+        int out = outputIndexFor(order.getResource().getItem());
+        if (out < 0 || outputSatelliteId[out] == 0) {
+            return faced;
+        }
+        PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
+        if (sat == null) {
+            return faced;
+        }
+        ForgeDirection facing = sat.getMachineFacing();
+        if (facing == null) {
+            return faced;
+        }
+        TileEntity machine = sat.getMachineTile();
+        if (machine == null) {
+            return faced;
+        }
+        AdjacentTile source = new AdjacentTile(machine, facing);
+        // The result enters the network through the satellite, out of the face its machine is on.
+        source.sender = sat;
+        return Collections.singletonList(source);
+    }
+
+    /** The Smart Satellite whose id an output is addressed to, or null if it isn't placed and reachable yet. */
+    private PipeSmartSatellite smartSatelliteForId(int id) {
+        for (PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
+            if (satellite.satelliteId == id && !satellite.stillNeedReplace() && satellite.getRouter() != null
+                    && isReachable(satellite.getRouter())) {
+                return satellite;
+            }
+        }
+        return null;
     }
 
     /** The output whose arrivals count finished sets. */
@@ -1154,6 +1236,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public static final int STATUS_WAITING_CLAIM = 5;
     public static final int STATUS_HOLDING = 6;
     public static final int STATUS_FLUID_NO_SATELLITE = 7;
+    /** A GregTech output next to this module empties itself, so results would bypass the crafter. */
+    public static final int STATUS_OUTPUT_PUSHES = 8;
+    /** Same as {@link #STATUS_OUTPUT_PUSHES}, next to one of this recipe's output satellites. */
+    public static final int STATUS_SATELLITE_OUTPUT_PUSHES = 9;
 
     public int computeStatus() {
         if (hasNoCraftableOutput()) {
@@ -1168,6 +1254,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (setTooLarge) {
             return STATUS_SET_TOO_LARGE;
         }
+        // Checked before idle, so it shows while the player is still setting up, before a result goes missing.
+        if (OutputPushUtil.findPushingNeighbour(getWorld(), getX(), getY(), getZ()) != null) {
+            return STATUS_OUTPUT_PUSHES;
+        }
+        if (outputSatelliteMachinePushes()) {
+            return STATUS_SATELLITE_OUTPUT_PUSHES;
+        }
         if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
             return STATUS_IDLE;
         }
@@ -1176,6 +1269,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return STATUS_WAITING_CLAIM;
         }
         return setsReleased > 0 ? STATUS_RUNNING : STATUS_HOLDING;
+    }
+
+    /** Whether a machine output next to any of this recipe's output satellites empties itself. */
+    private boolean outputSatelliteMachinePushes() {
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (getOutput(i) == null || outputSatelliteId[i] == 0) {
+                continue;
+            }
+            PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[i]);
+            if (sat != null && sat.findPushingOutput() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Sets released into the machine and not yet finished, shown next to the status. */
@@ -1739,6 +1846,47 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
+    /* Smart Satellite fluid input (reported by the satellite pipe) */
+
+    /**
+     * First input slot that holds this fluid. Fluid ingredients carry no slot information, so the satellite reports
+     * fluid arrivals and not-inserted events by fluid identity only.
+     *
+     * @return the slot index, or -1 if no input slot holds this fluid.
+     */
+    public int fluidSlotFor(FluidIdentifier fluid) {
+        if (fluid == null) {
+            return -1;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (fluidAmount[slot] > 0 && fluid.equals(getFluidIngredient(slot))) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    /** A fluid delivered to one of this crafter's satellite endpoints was inserted into the machine's tank. */
+    public void fluidArrived(FluidIdentifier fluid, int amount) {
+        if (fluidSlotFor(fluid) >= 0) {
+            lastProgressTick = now();
+        }
+    }
+
+    /**
+     * A fluid delivered to a satellite endpoint did not fit the machine's tank; the satellite re-queues it. Refund the
+     * slot's in-flight amount so the crafter may re-request it (mirrors {@link #itemLost}).
+     */
+    public void fluidNotInserted(FluidIdentifier fluid, int amount) {
+        int slot = fluidSlotFor(fluid);
+        if (slot < 0) {
+            return;
+        }
+        // The satellite re-queues the unfit fluid, so let the replacement through.
+        inFlight[slot] = Math.max(0, inFlight[slot] - amount);
+        allowance[slot] += amount;
+    }
+
     /* Gate */
 
     private void updateGate() {
@@ -2140,8 +2288,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (isFluidSlot(slot)) {
             return false; // goes to a fluid satellite, never into this module's machine
         }
-        ISlotUpgradeManager upgrades = getUpgradeManager();
-        if (upgrades.isAdvancedSatelliteCrafter()) {
+        // Gate by the same per-slot decision the router uses, not the physical Advanced Satellite upgrade: this
+        // crafter is always per-slot (see usesPerSlotSatellites), so a slot bound to a satellite (id != 0) is
+        // delivered there and never occupies this machine's input slots - it must not count against the room check
+        // or hold its release. Gating by the upgrade flag instead left every item slot gated whenever the upgrade
+        // was absent, so the room sim tripped and nothing was ever released.
+        if (usesPerSlotSatellites()) {
             return advancedSatelliteIdArray[slot] == 0;
         }
         return satelliteId == 0 || slot < 6;

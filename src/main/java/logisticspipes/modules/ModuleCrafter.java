@@ -1487,7 +1487,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             // retrieve the new crafted items
             ItemStack extracted = null;
             AdjacentTile tile = null;
-            for (AdjacentTile crafter : crafters) {
+            for (AdjacentTile crafter : resultSourcesFor(nextOrder, crafters)) {
                 tile = crafter;
                 extracted = extract(tile, nextOrder.getResource(), maxtosend);
                 if (extracted != null && extracted.stackSize > 0) {
@@ -1523,7 +1523,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                         ItemStack stackToSend = extracted.splitStack(numtosend);
                         // Route the unhandled item
 
-                        _service.sendStack(stackToSend, -1, ItemSendMode.Normal, null);
+                        sendUnrouted(tile, stackToSend, null);
                         continue;
                     }
                 }
@@ -1539,7 +1539,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
                     // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
                     onResultBuffered(nextOrder, stackToSend.stackSize);
-                    _service.sendStack(stackToSend, -1, ItemSendMode.Normal, nextOrder.getInformation());
+                    sendUnrouted(tile, stackToSend, nextOrder.getInformation());
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
                 } else if (nextOrder.getDestination() != null) {
                     SinkReply reply = LogisticsManager.canSink(
@@ -1556,10 +1556,10 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     item.setDestination(nextOrder.getDestination().getRouter().getSimpleID());
                     item.setTransportMode(TransportMode.Active);
                     item.setAdditionalTargetInformation(nextOrder.getInformation());
-                    _service.queueRoutedItem(item, tile.orientation);
+                    queueResult(tile, item);
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item);
                 } else {
-                    _service.sendStack(stackToSend, -1, ItemSendMode.Normal, nextOrder.getInformation());
+                    sendUnrouted(tile, stackToSend, nextOrder.getInformation());
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
                 }
                 if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
@@ -1568,6 +1568,48 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 }
             }
         }
+    }
+
+    /**
+     * Puts a result into the network through the pipe its source machine is attached to: the chassis, or the pipe named
+     * by {@link AdjacentTile#sender} (a Smart Satellite). The order accounting stays with this module either way.
+     */
+    private void queueResult(AdjacentTile source, IRoutedItem item) {
+        if (source.sender != null) {
+            source.sender.queueRoutedItem(item, source.getSendOrientation());
+        } else {
+            _service.queueRoutedItem(item, source.getSendOrientation());
+        }
+    }
+
+    /**
+     * Like {@code _service.sendStack(stack, -1, ItemSendMode.Normal, info)}, but through {@link AdjacentTile#sender} when
+     * set. The sender's own {@code sendStack} can't be used: it sends out of its pointed orientation, which a satellite
+     * doesn't have.
+     * <p>
+     * The sender is jammed as a destination: a satellite sinks into the machine it faces, and from the satellite that is
+     * the nearest sink there is, so the result would go straight back where it came from.
+     */
+    private void sendUnrouted(AdjacentTile source, ItemStack stack, IAdditionalTargetInformation info) {
+        if (source.sender == null) {
+            _service.sendStack(stack, -1, ItemSendMode.Normal, info);
+            return;
+        }
+        IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack);
+        item.getJamList().add(source.sender.getRouter().getSimpleID());
+        item.setDestination(-1);
+        item.setTransportMode(TransportMode.Active);
+        item.setAdditionalTargetInformation(info);
+        source.sender.queueRoutedItem(item, source.getSendOrientation(), ItemSendMode.Normal);
+    }
+
+    /**
+     * The machine(s) a finished result for {@code order} is pulled from. Defaults to the machines the chassis faces (see
+     * {@link #locateCrafters()}); a crafter whose outputs are addressed to a satellite overrides this to pull a
+     * particular output from the machine that satellite faces. The set accounting stays in the crafter either way.
+     */
+    protected List<AdjacentTile> resultSourcesFor(LogisticsItemOrder order, List<AdjacentTile> faced) {
+        return faced;
     }
 
     /** Where a finished result should go. */

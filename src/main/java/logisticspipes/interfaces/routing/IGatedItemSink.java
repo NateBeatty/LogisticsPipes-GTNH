@@ -2,6 +2,7 @@ package logisticspipes.interfaces.routing;
 
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
+import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.routing.IRouter;
 import logisticspipes.utils.item.ItemIdentifier;
 
@@ -34,6 +35,12 @@ public interface IGatedItemSink {
     static IGatedItemSink findTarget(IRouter destination, IAdditionalTargetInformation info) {
         if (destination == null || !(info instanceof ChassiTargetInformation)) {
             return null;
+        }
+        // A Smart Satellite is a plain pipe that gates by its own id; an order addressed to it goes to the pipe
+        // itself, not to a chassis submodule.
+        CoreRoutedPipe pipe = destination.getPipe();
+        if (pipe instanceof IGatedItemSink) {
+            return (IGatedItemSink) pipe;
         }
         LogisticsModule chassis = destination.getLogisticsModule();
         if (chassis == null) {

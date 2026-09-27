@@ -13,6 +13,7 @@ import org.lwjgl.opengl.GL11;
 
 import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.pipes.PipeItemsSatelliteLogistics;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.utils.gui.LogisticsBaseGuiScreen;
 import logisticspipes.utils.string.StringUtils;
 
@@ -20,6 +21,7 @@ public class GuiSatellitePipe extends LogisticsBaseGuiScreen {
 
     private PipeItemsSatelliteLogistics _satellite;
     private PipeFluidSatellite _liquidSatellite;
+    private PipeSmartSatellite _smartSatellite;
     private final EntityPlayer _player;
 
     public GuiSatellitePipe(PipeItemsSatelliteLogistics satellite, EntityPlayer player) {
@@ -45,6 +47,20 @@ public class GuiSatellitePipe extends LogisticsBaseGuiScreen {
             }
         });
         _liquidSatellite = satellite;
+        _player = player;
+        xSize = 116;
+        ySize = 70;
+    }
+
+    public GuiSatellitePipe(PipeSmartSatellite satellite, EntityPlayer player) {
+        super(new Container() {
+
+            @Override
+            public boolean canInteractWith(EntityPlayer entityplayer) {
+                return true;
+            }
+        });
+        _smartSatellite = satellite;
         _player = player;
         xSize = 116;
         ySize = 70;
@@ -78,6 +94,15 @@ public class GuiSatellitePipe extends LogisticsBaseGuiScreen {
                 _liquidSatellite.setPrevId(_player);
             }
             super.actionPerformed(guibutton);
+        } else if (_smartSatellite != null) {
+            if (guibutton.id == 0) {
+                _smartSatellite.setNextId(_player);
+            }
+
+            if (guibutton.id == 1) {
+                _smartSatellite.setPrevId(_player);
+            }
+            super.actionPerformed(guibutton);
         }
     }
 
@@ -96,6 +121,13 @@ public class GuiSatellitePipe extends LogisticsBaseGuiScreen {
             mc.fontRenderer.drawString(
                     _liquidSatellite.satelliteId + "",
                     59 - mc.fontRenderer.getStringWidth(_liquidSatellite.satelliteId + "") / 2,
+                    31,
+                    0x404040);
+        }
+        if (_smartSatellite != null) {
+            mc.fontRenderer.drawString(
+                    _smartSatellite.satelliteId + "",
+                    59 - mc.fontRenderer.getStringWidth(_smartSatellite.satelliteId + "") / 2,
                     31,
                     0x404040);
         }
