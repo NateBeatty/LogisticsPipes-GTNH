@@ -18,6 +18,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IIcon;
+import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.FluidTankInfo;
@@ -78,6 +79,7 @@ import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import logisticspipes.utils.string.StringUtils;
+import logisticspipes.utils.tuples.Pair;
 import lombok.Getter;
 
 /**
@@ -134,6 +136,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private int creditedSets = 0;
     private boolean gateDirty = true; // run the load sweep on the first tick
     private long lastProgressTick = 0;
+
+    /** Ticks since the last "no fluid sink" warning, so a stuck output doesn't spam the player every tick. */
+    private long lastNoFluidSinkWarn = 0;
+    private static final long FLUID_SINK_WARN_COOLDOWN = 400L; // ~20 s between repeat warnings
 
     /** The machine this module currently holds the claim for, or null. */
     private MachineClaims.Key claimedMachine = null;
@@ -471,11 +477,28 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /** Puts fluid back on the network with no destination, which sends it to the nearest fluid sink. */
     private void sendFluidBack(FluidStack fluid) {
+        sendFluidBack(fluid, null);
+    }
+
+    /**
+     * Puts a leftover container back on the network with no destination, so it ends in the nearest fluid sink. When
+     * {@code sat} is set the container enters through that satellite — out of the face its machine is on, jamming the
+     * satellite so it cannot loop back into the same machine; otherwise it goes up from the chassis as before.
+     */
+    private void sendFluidBack(FluidStack fluid, PipeSmartSatellite sat) {
         ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(fluid);
-        if (container != null) {
-            _service.queueRoutedItem(
-                    SimpleServiceLocator.routedItemHelper.createNewTravelItem(container.makeNormalStack()),
-                    ForgeDirection.UP);
+        if (container == null) {
+            return;
+        }
+        IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container.makeNormalStack());
+        item.setDestination(-1);
+        item.setTransportMode(TransportMode.Active);
+        ForgeDirection out = sat == null ? null : sat.getMachineFacing();
+        if (out != null) {
+            item.getJamList().add(sat.getRouter().getSimpleID());
+            sat.queueRoutedItem(item, out);
+        } else {
+            _service.queueRoutedItem(item, ForgeDirection.UP);
         }
     }
 
@@ -531,19 +554,44 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * Sends crafted fluid to whoever ordered it, mirroring {@code PipeFluidProvider}: drain the machine, wrap what came
-     * out in a container and route it to the order's router.
+     * out in a container and route it to the order's router (the requester), Active.
+     * <p>
+     * For an output addressed to a satellite the fluid is drained from, and routed out through, that satellite's machine
+     * instead of the block this module faces. There is deliberately <b>no</b> {@code getBestReply} gate here: that check
+     * only sees {@code IFluidSink} storage, but a crafted fluid's destination is the order's requester — often another
+     * crafter's machine, which is not a sink — so the gate would hold fluid that has a perfectly good consumer (and
+     * {@code PipeFluidProvider} does exactly this: it sends to the order's router without a sink check). The requester is
+     * a real destination that decides for itself what to do with any overflow; the backpressure gate lives on the
+     * leftover that {@code sendRemainingFluid} default-routes to storage.
      */
     private void sendCraftedFluid() {
         if (fluidOrders == null || !getFluidOrders().hasOrders(ResourceType.CRAFTING)) {
             return;
         }
         LogisticsFluidOrder order = getFluidOrders().peekAtTopRequest(ResourceType.CRAFTING);
-        IFluidHandler tank = facedTank();
+
+        PipeSmartSatellite sat = satelliteForOutput(order.getFluid());
+        IFluidHandler satTank = null;
+        ForgeDirection satFacing = null;
+        if (sat != null) {
+            ForgeDirection facing = sat.getMachineFacing();
+            if (facing != null && sat.getMachineTile() instanceof IFluidHandler) {
+                satFacing = facing;
+                satTank = (IFluidHandler) sat.getMachineTile();
+            }
+        }
+        boolean viaSatellite = satTank != null;
+        IFluidHandler tank = viaSatellite ? satTank : facedTank();
         if (tank == null) {
             return;
         }
+        ForgeDirection drainSide = viaSatellite ? satFacing.getOpposite() : insertionSide();
+
+        // Send straight to the requester, Active, exactly as PipeFluidProvider does for a tank: the order's router is a
+        // real destination (a crafter's machine, a provider, a tank) that decides for itself what to do with overflow,
+        // so no "is there a sink" gate here. Drains only what is still owed, capped per send like the provider.
         int wanted = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
-        FluidStack drained = drainFromTank(tank, order.getFluid(), wanted);
+        FluidStack drained = drainFromTank(tank, order.getFluid(), wanted, drainSide);
         if (drained == null || drained.amount <= 0) {
             return;
         }
@@ -551,13 +599,67 @@ public class ModuleSmartCrafter extends ModuleCrafter
         IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container);
         item.setDestination(order.getRouter().getSimpleID());
         item.setTransportMode(TransportMode.Active);
-        _service.queueRoutedItem(item, _service.inventoryOrientation());
+        if (viaSatellite) {
+            // Enter the network through the satellite, out of the face its machine is on, like the item outputs do.
+            sat.queueRoutedItem(item, satFacing);
+        } else {
+            _service.queueRoutedItem(item, _service.inventoryOrientation());
+        }
         getFluidOrders().sendSuccessfull(drained.amount, false, item);
         onFluidResultSent(drained);
         if (outstandingFluid(order.getFluid()) <= 0) {
             // That was the last of what was ordered, so anything still in the machine is left over from a set that
             // made more than the request needed. Send it on now, while this module is the one acting on the machine.
-            sendRemainingFluid(tank, order.getFluid());
+            sendRemainingFluid(tank, order.getFluid(), drainSide, viaSatellite ? sat : null);
+        }
+    }
+
+    /** The Smart Satellite a fluid output is addressed to, or null when the output goes to the block this module faces. */
+    private PipeSmartSatellite satelliteForOutput(FluidIdentifier fluid) {
+        int out = outputSlotForFluid(fluid);
+        if (out < 0 || outputSatelliteId[out] == 0) {
+            return null;
+        }
+        return smartSatelliteForId(outputSatelliteId[out]);
+    }
+
+    /** The output slot that produces {@code fluid}, or -1 if none of this recipe's fluid outputs match. */
+    private int outputSlotForFluid(FluidIdentifier fluid) {
+        if (fluid == null) {
+            return -1;
+        }
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            if (isFluidSlot(slot) && fluid.equals(getFluidIngredient(slot))) {
+                return out;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Rate-limited notice that a crafted fluid has nowhere to go. Sent to players near the module and to the server
+     * log so the player sees it while testing; the machine keeps holding meanwhile.
+     */
+    private void warnNoFluidSink(FluidIdentifier fluid) {
+        long t = now();
+        if (t - lastNoFluidSinkWarn < FLUID_SINK_WARN_COOLDOWN) {
+            return;
+        }
+        lastNoFluidSinkWarn = t;
+        String name = fluid == null ? "a fluid" : fluid.toString();
+        String msg = "Smart Satellite: no fluid sink can take " + name
+                + " to drain this output, so it is held in the machine.";
+        World world = getWorld();
+        if (world != null) {
+            for (EntityPlayer player : world.playerEntities) {
+                if (player.getDistanceSq(getX() + 0.5, getY() + 0.5, getZ() + 0.5) < 32 * 32) {
+                    player.addChatComponentMessage(new ChatComponentText("§e" + msg));
+                }
+            }
+        }
+        if (LogisticsPipes.log != null) {
+            LogisticsPipes.log.warn("[LogisticsPipes] " + msg + " at " + getX() + ", " + getY() + ", " + getZ());
         }
     }
 
@@ -565,17 +667,30 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * Pushes what the machine still holds of a finished result into the network, where it ends up in the nearest fluid
      * sink. Otherwise a crafter making more per set than was asked for slowly fills its own tank and stops.
      * <p>
-     * It needs somewhere to go: LP's only fluid sink is the Basic Fluid pipe, and that accepts nothing until the fluid
-     * is in its filter.
+     * Like {@link #sendCraftedFluid()} it drains nothing unless a reachable sink has room ({@code getBestReply}), so a
+     * leftover that has nowhere to go is held in the machine rather than voided, and the player is warned at a rate
+     * limit. When the output is a satellite's the leftover goes out through that satellite, {@code sat}, instead of
+     * the block this module faces.
      */
-    private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid) {
-        int left = heldInTank(tank, fluid);
+    private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
+            PipeSmartSatellite sat) {
+        int left = heldInTank(tank, fluid, drainSide);
         if (left <= 0) {
             return;
         }
-        FluidStack drained = drainFromTank(tank, fluid, left);
+        IRouter senderRouter = sat != null ? sat.getRouter() : getRouter();
+        // Probe with the whole leftover, not 1 mB: PipeFluidBasic.sinkAmount caps its answer at the stack's amount, so a
+        // 1-mB probe reports it can take only 1 and would strand the rest of the set's excess in the machine.
+        Pair<Integer, Integer> reply = SimpleServiceLocator.logisticsFluidManager
+                .getBestReply(fluid.makeFluidStack(left), senderRouter, new ArrayList<Integer>());
+        if (reply.getValue1() == 0) {
+            warnNoFluidSink(fluid);
+            return;
+        }
+        int wanted = Math.min(left, reply.getValue2());
+        FluidStack drained = drainFromTank(tank, fluid, wanted, drainSide);
         if (drained != null && drained.amount > 0) {
-            sendFluidBack(drained);
+            sendFluidBack(drained, sat);
         }
     }
 
@@ -603,20 +718,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Drains from our side if the machine allows it, else without a side. GT restricts which faces a fluid may be
+     * Drains from {@code side} if the machine allows it, else without a side. GT restricts which faces a fluid may be
      * pulled from, much as it does for item slots, so the face we insert through often isn't one of them.
      */
-    private FluidStack drainFromTank(IFluidHandler tank, FluidIdentifier fluid, int amount) {
+    private FluidStack drainFromTank(IFluidHandler tank, FluidIdentifier fluid, int amount, ForgeDirection side) {
         FluidStack wanted = fluid.makeFluidStack(amount);
-        FluidStack drained = tank.drain(insertionSide(), wanted, true);
+        FluidStack drained = tank.drain(side, wanted, true);
         if (drained == null || drained.amount <= 0) {
             drained = tank.drain(ForgeDirection.UNKNOWN, wanted, true);
         }
         return drained;
     }
 
-    private int heldInTank(IFluidHandler tank, FluidIdentifier fluid) {
-        FluidTankInfo[] tanks = tank.getTankInfo(insertionSide());
+    private int heldInTank(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection side) {
+        FluidTankInfo[] tanks = tank.getTankInfo(side);
         if (tanks == null || tanks.length == 0) {
             tanks = tank.getTankInfo(ForgeDirection.UNKNOWN);
         }
