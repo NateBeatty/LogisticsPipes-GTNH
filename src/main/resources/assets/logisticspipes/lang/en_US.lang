@@ -231,6 +231,7 @@ item.ModuleCrafterMK2=Crafting module MK2
 item.ModuleCrafterMK3=Crafting module MK3
 item.ModuleSmartCrafter=Smart Crafting module
 item.ModuleCraftingBuffer=Crafting Buffer module
+item.ModuleFluidCraftingBuffer=Fluid Crafting Buffer module
 item.ModuleActiveSupplier=Active Supplier Module
 item.ModuleCreativeTabBasedItemSink=Creative Tab Based ItemSink module
 item.ModuleTypeFilterItemSink=Type Filter ItemSink module

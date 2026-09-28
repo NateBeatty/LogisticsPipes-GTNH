@@ -63,6 +63,7 @@ import logisticspipes.items.RemoteOrderer;
 import logisticspipes.logistics.LogisticsFluidManager;
 import logisticspipes.logistics.LogisticsManager;
 import logisticspipes.modules.ModuleCraftingBuffer;
+import logisticspipes.modules.ModuleFluidCraftingBuffer;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.network.GuiHandler;
 import logisticspipes.network.NewGuiHandler;
@@ -570,6 +571,7 @@ public class LogisticsPipes {
         PipeSmartSatellite.cleanup();
         ModuleSmartCrafter.cleanupCrafters();
         ModuleCraftingBuffer.cleanup();
+        ModuleFluidCraftingBuffer.cleanup();
         CraftingJobs.clear();
         ServerRouter.cleanup();
         if (event.getSide().equals(Side.CLIENT)) {

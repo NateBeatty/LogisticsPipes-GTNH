@@ -434,6 +434,174 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
     }
 
+    /**
+     * Per ingredient slot, how much of a fluid sub-crafters have sent to the fluid buffers for this module and it
+     * hasn't pulled yet, in millibuckets. The fluid twin of {@code buffered}: the credit is kept here, in the crafter,
+     * never in the buffer. Only a slot that pours into this module's own machine uses it - one bound to a satellite
+     * pours into the satellite's machine instead and goes its own way.
+     */
+    private final int[] fluidBuffered = new int[INGREDIENT_SLOTS];
+
+    /** Whether this fluid slot pours into this module's own machine, the only case the fluid gate and buffers touch. */
+    private boolean isBufferableFluidSlot(int slot) {
+        return isFluidSlot(slot) && advancedSatelliteIdArray[slot] == 0;
+    }
+
+    /** A sub-crafter sent a fluid meant for this module to a buffer, because this module's gate was shut. */
+    public void creditFluidBuffered(FluidIdentifier fluid, int amount) {
+        int slot = fluidSlotFor(fluid);
+        if (slot < 0 || !isBufferableFluidSlot(slot) || amount <= 0) {
+            return;
+        }
+        fluidBuffered[slot] += amount;
+        gateDirty = true;
+    }
+
+    /** How much of a fluid this module has credit for across its slots, for a buffer working out its orphans. */
+    public int getBufferFluidCredit(FluidIdentifier fluid) {
+        int total = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (fluidBuffered[slot] > 0 && isBufferableFluidSlot(slot) && getFluidIngredient(slot).equals(fluid)) {
+                total += fluidBuffered[slot];
+            }
+        }
+        return total;
+    }
+
+    /** What this module may take from the fluid buffers for a slot now: its credit, as far as the stock goes. */
+    private int fluidBufferedFor(int slot) {
+        if (fluidBuffered[slot] <= 0) {
+            return 0;
+        }
+        return Math.min(fluidBuffered[slot], fluidBufferStock(getFluidIngredient(slot)));
+    }
+
+    /** How much of a fluid all loaded fluid buffers together hold. */
+    private int fluidBufferStock(FluidIdentifier fluid) {
+        int total = 0;
+        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.AllBuffers) {
+            total += buffer.getBufferFluidAvailable(fluid);
+        }
+        return total;
+    }
+
+    /**
+     * Drops this module's fluid buffer credit, when it has nothing left to craft or is removed. What it no longer has
+     * credit for is an orphan, so the buffers are told to return it now.
+     */
+    private void clearFluidBufferedCredit() {
+        boolean had = false;
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            had |= fluidBuffered[slot] > 0;
+            fluidBuffered[slot] = 0;
+        }
+        if (had) {
+            ModuleFluidCraftingBuffer.returnAllOrphans();
+        }
+    }
+
+    /**
+     * Takes what the fluid buffers hold for a slot, up to this module's credit and the room its machine's tank still has,
+     * and pours it into the machine. Like {@link #pullFromBuffers}, buffered fluid has no provider to ask, so it has to be
+     * pulled once the gate opens; and like the gate, it is capped by the tank's room so the delivery never bounces.
+     */
+    private void pullFluidFromBuffers(int slot, int wanted) {
+        wanted = Math.min(wanted, fluidBuffered[slot]);
+        if (wanted <= 0 || ModuleFluidCraftingBuffer.AllBuffers.isEmpty()) {
+            return;
+        }
+        FluidIdentifier fluid = getFluidIngredient(slot);
+        if (fluid == null) {
+            return;
+        }
+        IFluidHandler tank = facedTank();
+        int room = tank == null ? 0 : tank.fill(insertionSide(), fluid.makeFluidStack(wanted), false);
+        wanted = Math.min(wanted, Math.max(room, 0));
+        if (wanted <= 0) {
+            return;
+        }
+        int left = wanted;
+        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.AllBuffers) {
+            if (left <= 0) {
+                break;
+            }
+            int sent = buffer.sendToFluid(fluid, left, getRouter().getSimpleID());
+            if (sent > 0) {
+                left -= sent;
+                fluidBuffered[slot] = Math.max(0, fluidBuffered[slot] - sent);
+                allowance[slot] = Math.max(0, allowance[slot] - sent);
+                inFlight[slot] += sent;
+                lastProgressTick = now();
+            }
+        }
+    }
+
+    /**
+     * How much of this fluid the gate allows into this module right now, in millibuckets: the released-set credit
+     * ({@code allowance}) capped by the room the machine's tank actually has, so a full machine reads zero and a producer
+     * buffers instead of flooding it. Integer.MAX_VALUE when the fluid is not a bufferable ingredient. Mirrors
+     * {@link #getGatedAllowance} on the item side, plus the tank-room check that items get from the release-time sim.
+     */
+    public int getFluidGatedAllowance(FluidIdentifier fluid) {
+        int slot = fluidSlotFor(fluid);
+        if (slot < 0 || !isBufferableFluidSlot(slot)) {
+            return Integer.MAX_VALUE;
+        }
+        int grant = this.allowance[slot];
+        if (grant <= 0) {
+            return 0;
+        }
+        IFluidHandler tank = facedTank();
+        int room = tank == null ? 0 : tank.fill(insertionSide(), fluid.makeFluidStack(grant), false);
+        return Math.max(0, Math.min(grant, room));
+    }
+
+    /**
+     * A producer has checked {@link #getFluidGatedAllowance} and is sending fluid for this slot now, so that much stops
+     * being grantable and starts being on its way.
+     */
+    public void onFluidGatedSend(FluidIdentifier fluid, int amount) {
+        int slot = fluidSlotFor(fluid);
+        if (slot < 0 || !isBufferableFluidSlot(slot) || amount <= 0) {
+            return;
+        }
+        allowance[slot] = Math.max(0, allowance[slot] - amount);
+        inFlight[slot] += amount;
+        lastProgressTick = now();
+    }
+
+    /** A fluid buffer now holds stock this module may pull; a buffer only takes what is credited, so wake the gate. */
+    public void onBufferFluidStockArrived(FluidIdentifier fluid) {
+        if (fluidSlotFor(fluid) >= 0) {
+            gateDirty = true;
+        }
+    }
+
+    /**
+     * A fluid addressed to this module landed in the machine: whatever was on its way for the slot is now resolved
+     * (in the machine or bounced), so it is no longer in flight either way. Called on arrival.
+     */
+    private void onFluidDelivered(FluidIdentifier fluid, int amount) {
+        if (fluid == null || amount <= 0) {
+            return;
+        }
+        int slot = fluidSlotFor(fluid);
+        if (slot < 0 || !isBufferableFluidSlot(slot)) {
+            return;
+        }
+        inFlight[slot] = Math.max(0, inFlight[slot] - amount);
+    }
+
+    /** A fluid buffer that can still take at least this much of this fluid, or null when none of them can. */
+    private ModuleFluidCraftingBuffer fluidBufferWithRoomFor(FluidIdentifier fluid, int amount) {
+        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.AllBuffers) {
+            if (buffer.hasRoomFor(fluid, amount)) {
+                return buffer;
+            }
+        }
+        return null;
+    }
+
     /* Fluid ingredients */
 
     /**
@@ -456,6 +624,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             rejected.amount = fluid.amount - filled;
             sendFluidBack(rejected);
         }
+        onFluidDelivered(FluidIdentifier.get(fluid), fluid.amount);
         lastProgressTick = now();
         return true;
     }
@@ -569,8 +738,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         LogisticsFluidOrder order = getFluidOrders().peekAtTopRequest(ResourceType.CRAFTING);
+        FluidIdentifier fluid = order.getFluid();
 
-        PipeSmartSatellite sat = satelliteForOutput(order.getFluid());
+        PipeSmartSatellite sat = satelliteForOutput(fluid);
         IFluidHandler satTank = null;
         ForgeDirection satFacing = null;
         if (sat != null) {
@@ -587,11 +757,52 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         ForgeDirection drainSide = viaSatellite ? satFacing.getOpposite() : insertionSide();
 
+        int maxSend = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
+
+        // The gate: how much the requester's machine can actually take right now. A Smart Crafter consumer caps it by
+        // the room its tank has (see getFluidGatedAllowance); anything that is not one is ungated, so the full amount
+        // goes. This is what stops a full machine being flooded with an intermediate it cannot accept yet.
+        IRequestFluid consumer = order.getDestination();
+        int gateAllowance = consumer instanceof ModuleSmartCrafter
+                ? ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(fluid)
+                : Integer.MAX_VALUE;
+        int wanted = Math.min(maxSend, gateAllowance);
+
+        // Gate shut (machine full, or nothing released yet): park what we can in a fluid buffer and credit the consumer
+        // for it, so it is owed exactly what we send and pulls it back once the machine has room. Only a Smart Crafter
+        // consumer is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and try
+        // again next tick.
+        if (wanted <= 0 && consumer instanceof ModuleSmartCrafter) {
+            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, maxSend);
+            if (buffer == null) {
+                return;
+            }
+            FluidStack drained = drainFromTank(tank, fluid, maxSend, drainSide);
+            if (drained == null || drained.amount <= 0) {
+                return;
+            }
+            ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(drained);
+            IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container);
+            item.setDestination(buffer.getBufferRouter());
+            item.setTransportMode(TransportMode.Active);
+            if (viaSatellite) {
+                sat.queueRoutedItem(item, satFacing);
+            } else {
+                _service.queueRoutedItem(item, _service.inventoryOrientation());
+            }
+            ((ModuleSmartCrafter) consumer).creditFluidBuffered(fluid, drained.amount);
+            getFluidOrders().sendSuccessfull(drained.amount, false, item);
+            onFluidResultSent(drained);
+            if (outstandingFluid(fluid) <= 0) {
+                sendRemainingFluid(tank, fluid, drainSide, viaSatellite ? sat : null);
+            }
+            return;
+        }
+
         // Send straight to the requester, Active, exactly as PipeFluidProvider does for a tank: the order's router is a
-        // real destination (a crafter's machine, a provider, a tank) that decides for itself what to do with overflow,
-        // so no "is there a sink" gate here. Drains only what is still owed, capped per send like the provider.
-        int wanted = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
-        FluidStack drained = drainFromTank(tank, order.getFluid(), wanted, drainSide);
+        // real destination that decides for itself what to do with overflow. Drains only what the gate allows, capped
+        // per send like the provider.
+        FluidStack drained = drainFromTank(tank, fluid, wanted, drainSide);
         if (drained == null || drained.amount <= 0) {
             return;
         }
@@ -606,11 +817,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
             _service.queueRoutedItem(item, _service.inventoryOrientation());
         }
         getFluidOrders().sendSuccessfull(drained.amount, false, item);
+        // Tell the consumer it may count this as on the way, so its gate (allowance / in-flight) stays honest.
+        if (consumer instanceof ModuleSmartCrafter) {
+            ((ModuleSmartCrafter) consumer).onFluidGatedSend(fluid, drained.amount);
+        }
         onFluidResultSent(drained);
-        if (outstandingFluid(order.getFluid()) <= 0) {
+        if (outstandingFluid(fluid) <= 0) {
             // That was the last of what was ordered, so anything still in the machine is left over from a set that
             // made more than the request needed. Send it on now, while this module is the one acting on the machine.
-            sendRemainingFluid(tank, order.getFluid(), drainSide, viaSatellite ? sat : null);
+            sendRemainingFluid(tank, fluid, drainSide, viaSatellite ? sat : null);
         }
     }
 
@@ -1178,18 +1393,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         for (int out = 0; out < OUTPUT_SLOTS; out++) {
             int slot = outputInventorySlot(out);
-            LogisticsPipes.log.info(
-                    "[SmartCrafter DEBUG] result " + out
-                            + " role="
-                            + outputRole[out]
-                            + " isFluid="
-                            + isFluidSlot(slot)
-                            + " litres="
-                            + fluidAmount[slot]
-                            + " has="
-                            + getFluidIngredient(slot)
-                            + " wanted="
-                            + fluid);
             if (outputRole[out] == OutputRole.PRODUCT && isFluidSlot(slot) && fluid.equals(getFluidIngredient(slot))) {
                 return out;
             }
@@ -2097,6 +2300,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
 
+        // The fluid twin of the loop above: pull the intermediates another crafter parked in a fluid buffer, for this
+        // set's fluid ingredients. A fluid's machine-room lives in the tank, so the "already here" term is what the tank
+        // holds of it; there is no machine inventory to count. The pull is itself capped by the tank's room.
+        for (int slot = 0; claimedMachine != null && !ModuleFluidCraftingBuffer.AllBuffers.isEmpty()
+                && slot < INGREDIENT_SLOTS; slot++) {
+            if (!isBufferableFluidSlot(slot)) {
+                continue;
+            }
+            if (fluidBufferedFor(slot) <= 0) {
+                continue;
+            }
+            IFluidHandler tank = facedTank();
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            int onHand = inFlight[slot] + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
+            int neededFluid = wanted * fluidAmount[slot] - onHand;
+            if (neededFluid > 0) {
+                pullFluidFromBuffers(slot, neededFluid);
+            }
+        }
+
         // Hand the machine over once the sets in it are done, if someone else is waiting for it. An owner that
         // couldn't release anything (machine blocked) keeps it for a while first, so two blocked crafters don't pass it
         // back and forth every tick.
@@ -2148,7 +2371,115 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 return false;
             }
         }
+        // The fluid twin of the loop above. Without it a recipe whose only intermediate is a fluid is always "ready",
+        // so its raw materials are released the moment the order lands - before the fluid that gates them exists.
+        //
+        // A fluid's on-hand total is exactly where it lands:
+        //   - non-satellite: this module's own machine tank, plus what is in flight and parked in a fluid buffer;
+        //   - satellite-routed: the machine the slot's satellite pours into - a DIFFERENT machine from the one this
+        //     module faces - and a satellite never goes through a buffer, so the tank's contents are the whole total.
+        // Only a Smart Satellite has a single machine to read; a normal fluid satellite serves several tanks, so an
+        // unobservable slot is treated as ready (holding blind would only trip the safety valve) - the no-wait
+        // behaviour that path always had.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isFluidSlot(slot)) {
+                continue;
+            }
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            if (!isFluidCraftedByAnother(fluid)) {
+                continue;
+            }
+            int onHand;
+            if (advancedSatelliteIdArray[slot] == 0) {
+                IFluidHandler tank = facedTank();
+                onHand = inFlight[slot] + fluidBufferedFor(slot)
+                        + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
+            } else {
+                int satHeld = heldInSatelliteMachine(slot, fluid);
+                if (satHeld < 0) {
+                    continue;
+                }
+                onHand = satHeld;
+            }
+            if (onHand < fluidAmount[slot]) {
+                return false;
+            }
+        }
+        // Satellite item slots: isGatedSlot excludes them (a satellite-delivered item never occupies this machine's
+        // inputs and must not count against the room check), so the first loop skips them. They still need the
+        // intermediate hold though - a satellite-delivered item that another crafter makes should keep this set's other
+        // raw materials waiting until it is actually in the satellite's machine. inFlight and the buffer are not tracked
+        // for satellite slots (both are gated on isGatedSlot), so the machine's inventory is the whole on-hand total.
+        // Hold check only: it decides when to release the set and never adds the slot to the room count.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (advancedSatelliteIdArray[slot] == 0 || isFluidSlot(slot)) {
+                continue;
+            }
+            ItemIdentifierStack material = getMaterials(slot);
+            if (material == null) {
+                continue;
+            }
+            ItemIdentifier item = material.getItem();
+            if (!isCraftedByAnother(item)) {
+                continue;
+            }
+            int onHand = itemsInSatelliteMachine(slot, item);
+            if (onHand < 0) {
+                continue; // unobservable (not a Smart Satellite machine): ready, as the item path always was
+            }
+            if (onHand < material.getStackSize()) {
+                return false;
+            }
+        }
         return true;
+    }
+
+    /**
+     * How many of this item are already in the machine a satellite-routed item slot delivers into, or -1 when the slot
+     * can't be observed that way: it names no satellite, it names a normal item satellite (no single machine to read),
+     * or the Smart Satellite's machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather than
+     * hold blind. Satellite item slots are not tracked in inFlight or the buffer (both are gated on isGatedSlot), so the
+     * machine's inventory is the whole on-hand total.
+     */
+    private int itemsInSatelliteMachine(int slot, ItemIdentifier item) {
+        if (advancedSatelliteIdArray[slot] == 0 || item == null) {
+            return -1;
+        }
+        PipeSmartSatellite sat = smartSatelliteForId(advancedSatelliteIdArray[slot]);
+        if (sat == null) {
+            return -1;
+        }
+        TileEntity machine = sat.getMachineTile();
+        if (!(machine instanceof IInventory)) {
+            return -1;
+        }
+        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
+                .getInventoryUtil((IInventory) machine, ForgeDirection.UNKNOWN);
+        return util == null ? 0 : util.itemCount(item);
+    }
+
+    /**
+     * How much of this fluid is already in the machine a satellite-routed fluid slot pours into, or -1 when the slot
+     * can't be observed that way: it names no satellite, it names a normal fluid satellite (several tanks, no single
+     * machine to read), or the Smart Satellite's machine is not (yet) a fluid handler. -1 lets the caller treat the
+     * slot as ready rather than hold blind.
+     */
+    private int heldInSatelliteMachine(int slot, FluidIdentifier fluid) {
+        if (advancedSatelliteIdArray[slot] == 0 || fluid == null) {
+            return -1;
+        }
+        IRequestFluid sat = fluidSatelliteFor(slot);
+        if (!(sat instanceof PipeSmartSatellite)) {
+            return -1;
+        }
+        PipeSmartSatellite smart = (PipeSmartSatellite) sat;
+        ForgeDirection facing = smart.getMachineFacing();
+        if (facing == null || !(smart.getMachineTile() instanceof IFluidHandler)) {
+            return -1;
+        }
+        // The satellite sits on the machine's opposite face; query the tank from the face it pours through (mirrors the
+        // drain side sendCraftedFluid uses). heldInTank falls back to UNKNOWN when a machine gives per-side no answer.
+        return heldInTank((IFluidHandler) smart.getMachineTile(), fluid, facing.getOpposite());
     }
 
     /**
@@ -2184,6 +2515,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 if (result.getItem().equals(item)) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether some other loaded Smart Crafter makes this fluid as a Product, i.e. it is an intermediate rather than a
+     * raw material. Fluid results are not in {@link #getConfiguredCraftResults()} (items only), so this walks the same
+     * crafters against their fluid results instead.
+     */
+    private boolean isFluidCraftedByAnother(FluidIdentifier fluid) {
+        if (fluid == null) {
+            return false;
+        }
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter == this) {
+                continue;
+            }
+            if (crafter.fluidResultSlot(fluid) >= 0) {
+                return true;
             }
         }
         return false;
@@ -2237,6 +2588,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 allowance[slot] += sets * getMaterials(slot).getStackSize();
+            } else if (isBufferableFluidSlot(slot)) {
+                allowance[slot] += sets * fluidAmount[slot];
             }
         }
         // A set from "Request set" is finished once its ingredients are delivered: it exists to hand the machine one
@@ -2246,6 +2599,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 pullFromBuffers(slot, sets * getMaterials(slot).getStackSize());
+            } else if (isBufferableFluidSlot(slot)) {
+                pullFluidFromBuffers(slot, sets * fluidAmount[slot]);
             }
         }
         releasedThisTurn = true;
@@ -2316,6 +2671,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         releaseClaim();
         stopWaiting();
         clearBufferedCredit();
+        clearFluidBufferedCredit();
     }
 
     private void releaseClaim() {

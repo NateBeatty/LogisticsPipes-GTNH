@@ -23,6 +23,7 @@ import logisticspipes.interfaces.routing.IProvideFluids;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.logisticspipes.IRoutedItem;
 import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
+import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.pipes.basic.fluid.FluidRoutedPipe;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.RequestTree;
@@ -54,8 +55,16 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
 
         LogisticsFluidOrder order = getFluidOrderManager().peekAtTopRequest(ResourceType.PROVIDER);
         int amountToSend, attemptedAmount;
-        amountToSend = attemptedAmount = Math
+        attemptedAmount = amountToSend = Math
                 .min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
+        // A Smart Crafter consumer only lets in what its machine can take right now; the rest stays in storage for the
+        // next pass. attemptedAmount keeps the original, so a fully-gated pass still reads as "sent nothing" (retry)
+        // rather than a failed order. Anything that is not a Smart Crafter has no fluid gate and takes the full amount.
+        IRequestFluid consumer = order.getDestination();
+        if (consumer instanceof ModuleSmartCrafter) {
+            amountToSend = Math.min(amountToSend,
+                    ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(order.getFluid()));
+        }
         for (Pair<TileEntity, ForgeDirection> pair : getAdjacentTanks(false)) {
             if (amountToSend <= 0) {
                 break;

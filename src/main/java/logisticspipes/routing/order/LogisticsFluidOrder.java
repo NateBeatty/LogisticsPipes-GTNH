@@ -26,6 +26,7 @@ public class LogisticsFluidOrder extends LogisticsOrder {
     @Getter
     private int amount;
 
+    @Getter
     private final IRequestFluid destination;
 
     @Override
