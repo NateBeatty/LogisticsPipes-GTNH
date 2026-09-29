@@ -40,6 +40,7 @@ import logisticspipes.modules.ModuleCrafterMK3;
 import logisticspipes.modules.ModuleCraftingBuffer;
 import logisticspipes.modules.ModuleCreativeTabBasedItemSink;
 import logisticspipes.modules.ModuleFluidCraftingBuffer;
+import logisticspipes.modules.ModuleFluidSink;
 import logisticspipes.modules.ModuleElectricBuffer;
 import logisticspipes.modules.ModuleElectricManager;
 import logisticspipes.modules.ModuleEnchantmentSink;
@@ -119,6 +120,7 @@ public class ItemModule extends LogisticsItem {
     public static final int SMART_CRAFTER = 603;
     public static final int CRAFTING_BUFFER = 604;
     public static final int FLUID_CRAFTING_BUFFER = 605;
+    public static final int FLUIDSINK = 610;
 
     private final List<Module> modules = new ArrayList<>();
 
@@ -212,6 +214,7 @@ public class ItemModule extends LogisticsItem {
         registerModule(ItemModule.SMART_CRAFTER, ModuleSmartCrafter.class);
         registerModule(ItemModule.CRAFTING_BUFFER, ModuleCraftingBuffer.class);
         registerModule(ItemModule.FLUID_CRAFTING_BUFFER, ModuleFluidCraftingBuffer.class);
+        registerModule(ItemModule.FLUIDSINK, ModuleFluidSink.class);
         registerModule(ItemModule.ACTIVE_SUPPLIER, ModuleActiveSupplier.class);
         registerModule(ItemModule.CREATIVETABBASEDITEMSINK, ModuleCreativeTabBasedItemSink.class);
 

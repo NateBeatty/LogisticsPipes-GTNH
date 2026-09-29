@@ -8,6 +8,7 @@ import logisticspipes.interfaces.ISendRoutedItem;
 import logisticspipes.interfaces.ISlotUpgradeManager;
 import logisticspipes.modules.abstractmodules.LogisticsModule.ModulePositionType;
 import logisticspipes.routing.order.LogisticsItemOrderManager;
+import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.item.ItemIdentifier;
 
 public interface IInventoryProvider extends ISendRoutedItem {
@@ -34,4 +35,7 @@ public interface IInventoryProvider extends ISendRoutedItem {
     ISlotUpgradeManager getUpgradeManager(ModulePositionType slot, int positionInt);
 
     int countOnRoute(ItemIdentifier item);
+
+    /** Total amount of a given fluid already on the way into this pipe, summed across the routed containers holding it. */
+    int countFluidOnRoute(FluidIdentifier ident);
 }

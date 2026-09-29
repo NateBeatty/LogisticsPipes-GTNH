@@ -41,6 +41,8 @@ import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.ICraftItems;
 import logisticspipes.interfaces.routing.IFilter;
 import logisticspipes.interfaces.routing.IFluidContainerReceiver;
+import logisticspipes.interfaces.routing.IFluidSink;
+import logisticspipes.interfaces.routing.IFluidSinkModule;
 import logisticspipes.interfaces.routing.IProvideItems;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
@@ -90,7 +92,7 @@ import lombok.Getter;
 @CCType(name = "LogisticsChassiePipe")
 public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         implements ICraftItems, IBufferItems, ISimpleInventoryEventHandler, ISendRoutedItem, IProvideItems,
-        IHeadUpDisplayRendererProvider, ISendQueueContentRecieiver, IFluidContainerReceiver {
+        IHeadUpDisplayRendererProvider, ISendQueueContentRecieiver, IFluidContainerReceiver, IFluidSink {
 
     private final ChassiModule _module;
     private final ItemIdentifierInventory _moduleInventory;
@@ -744,6 +746,40 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
             }
         }
         return false;
+    }
+
+    /**
+     * Room for the given fluid on this chassis, forwarded to the first fluid-sink module (slot order) that can take it.
+     * Returns 0 with no such module, so a chassis without a fluid-sink module is invisible to the fluid router.
+     */
+    @Override
+    public int sinkAmount(FluidStack stack) {
+        return fluidSinkAmount(stack, false);
+    }
+
+    /**
+     * Room for the given fluid on this chassis as a default path (last resort), forwarded to the first fluid-sink
+     * module (slot order) that has the flag set and can take it.
+     */
+    @Override
+    public int defaultPathSinkAmount(FluidStack stack) {
+        return fluidSinkAmount(stack, true);
+    }
+
+    private int fluidSinkAmount(FluidStack stack, boolean defaultPath) {
+        if (stack == null) {
+            return 0;
+        }
+        for (int i = 0; i < getChassiSize(); i++) {
+            LogisticsModule module = _module.getSubModule(i);
+            if (module instanceof IFluidSinkModule) {
+                int amount = ((IFluidSinkModule) module).sinkAmount(stack, defaultPath);
+                if (amount > 0) {
+                    return amount;
+                }
+            }
+        }
+        return 0;
     }
 
     @Override

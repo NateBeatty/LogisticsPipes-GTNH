@@ -26,6 +26,11 @@ public class LogisticsFluidManager implements ILogisticsFluidManager {
 
     @Override
     public Pair<Integer, Integer> getBestReply(FluidStack stack, IRouter sourceRouter, List<Integer> jamList) {
+        // Pass 2 fallback: the nearest default-path sink with room, consulted only if pass 1 finds nothing.
+        // Candidates are cost-ordered (nearest first), so the first one seen is the nearest.
+        int defaultPathDestination = 0;
+        int defaultPathAmount = 0;
+
         for (ExitRoute candidateRouter : sourceRouter.getIRoutersByCost()) {
             if (!candidateRouter.containsFlag(PipeRoutingConnectionType.canRouteTo)) {
                 continue;
@@ -45,11 +50,26 @@ public class LogisticsFluidManager implements ILogisticsFluidManager {
             if (!(pipe instanceof IFluidSink)) {
                 continue;
             }
+            IFluidSink sink = (IFluidSink) pipe;
 
-            int amount = ((IFluidSink) pipe).sinkAmount(stack);
+            // Pass 1 (unchanged): first filtered sink with room wins immediately.
+            int amount = sink.sinkAmount(stack);
             if (amount > 0) {
                 return new Pair<>(candidateRouter.destination.getSimpleID(), amount);
             }
+
+            // Pass 2 (default path): remember the nearest default-path sink with room. Inert while
+            // no sink has the flag set — defaultPathSinkAmount defaults to 0 on every existing pipe.
+            if (defaultPathDestination == 0) {
+                int defaultAmount = sink.defaultPathSinkAmount(stack);
+                if (defaultAmount > 0) {
+                    defaultPathDestination = candidateRouter.destination.getSimpleID();
+                    defaultPathAmount = defaultAmount;
+                }
+            }
+        }
+        if (defaultPathDestination != 0) {
+            return new Pair<>(defaultPathDestination, defaultPathAmount);
         }
         return new Pair<>(0, 0);
     }

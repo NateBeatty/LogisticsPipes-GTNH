@@ -9,11 +9,14 @@ import net.minecraft.init.Blocks;
 import net.minecraft.init.Items;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraftforge.oredict.OreDictionary;
 
 import logisticspipes.LogisticsPipes;
 import logisticspipes.config.Configs;
 import logisticspipes.interfaces.ICraftingResultHandler;
+import logisticspipes.items.ItemModule;
 import logisticspipes.items.ItemPipeComponents;
+import logisticspipes.items.LogisticsItemCard;
 import logisticspipes.proxy.interfaces.ICraftingParts;
 
 // @formatter:off
@@ -35,7 +38,54 @@ public class SolderingStationRecipes {
 
     private static final ArrayList<SolderingStationRecipe> recipes = new ArrayList<>();
 
+    /**
+     * GTNH makes everything else with GregTech recipes (NewHorizonsCoreMod), but the Frequency Card has to come from the
+     * station: only its result handler can stamp the random UUID that pairs the two cards of one craft.
+     */
+    private static void loadGTNHRecipes() {
+        List<ItemStack> pearlPlates = OreDictionary.getOres("plateEnderPearl");
+        if (pearlPlates.isEmpty()) {
+            return;
+        }
+        ItemStack pearlPlate = singleExact(pearlPlates.get(0));
+        ItemStack blankModule = new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.BLANK);
+        // The station matches inputs by exact item and damage, so each HV circuit variant needs its own recipe.
+        for (ItemStack circuitStack : OreDictionary.getOres("circuitAdvanced")) {
+            ItemStack circuit = singleExact(circuitStack);
+            SolderingStationRecipes.recipes.add(new SolderingStationRecipe(
+                    new ItemStack[] {
+                        circuit,
+                        null,
+                        circuit,
+                        blankModule,
+                        pearlPlate,
+                        blankModule,
+                        null,
+                        null,
+                        null
+                    },
+                    new ItemStack(LogisticsPipes.LogisticsItemCard, 2, LogisticsItemCard.FREQ_CARD),
+                    stack -> {
+                        stack.stackTagCompound = new NBTTagCompound();
+                        stack.stackTagCompound.setString(
+                                "UUID", UUID.randomUUID().toString());
+                    }));
+        }
+    }
+
+    private static ItemStack singleExact(ItemStack oreStack) {
+        ItemStack stack = oreStack.copy();
+        stack.stackSize = 1;
+        if (stack.getItemDamage() == OreDictionary.WILDCARD_VALUE) {
+            stack.setItemDamage(0);
+        }
+        return stack;
+    }
+
     public static void loadRecipe(ICraftingParts parts) {
+        if (LogisticsPipes.isGTNH) {
+            loadGTNHRecipes();
+        }
         if (!Configs.ENABLE_BETA_RECIPES && !LogisticsPipes.isGTNH) {
 			SolderingStationRecipes.recipes.add(new SolderingStationRecipe(new ItemStack[] {
 					parts.getChipTear1(),

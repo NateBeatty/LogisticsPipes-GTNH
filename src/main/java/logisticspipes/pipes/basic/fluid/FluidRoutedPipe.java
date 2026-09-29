@@ -220,17 +220,7 @@ public abstract class FluidRoutedPipe extends CoreRoutedPipe {
     }
 
     public int countOnRoute(FluidIdentifier ident) {
-        int amount = 0;
-        for (ItemRoutingInformation next : _inTransitToMe) {
-            ItemIdentifierStack item = next.getItem();
-            if (item.getItem().isFluidContainer()) {
-                FluidStack liquid = SimpleServiceLocator.logisticsFluidManager.getFluidFromContainer(item);
-                if (FluidIdentifier.get(liquid).equals(ident)) {
-                    amount += liquid.amount;
-                }
-            }
-        }
-        return amount;
+        return countFluidOnRoute(ident);
     }
 
     public abstract boolean canInsertFromSideToTanks();

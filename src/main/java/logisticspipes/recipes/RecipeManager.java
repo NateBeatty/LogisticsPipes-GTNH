@@ -758,6 +758,12 @@ public class RecipeManager {
                     new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.SMART_CRAFTER),
                     Items.bucket);
 
+            RecipeManager.craftingManager.addShapelessRecipe(
+                    new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.FLUIDSINK),
+                    CraftingDependency.Modular_Pipes,
+                    new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.ITEMSINK),
+                    Items.bucket);
+
             RecipeManager.craftingManager.addRecipe(
                     new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.MODBASEDITEMSINK),
                     CraftingDependency.Sink_Modules,
@@ -2169,6 +2175,12 @@ public class RecipeManager {
                     new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.FLUID_CRAFTING_BUFFER),
                     CraftingDependency.Modular_Pipes,
                     new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.SMART_CRAFTER),
+                    Items.bucket);
+
+            RecipeManager.craftingManager.addShapelessRecipe(
+                    new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.FLUIDSINK),
+                    CraftingDependency.Modular_Pipes,
+                    new ItemStack(LogisticsPipes.ModuleItem, 1, ItemModule.ITEMSINK),
                     Items.bucket);
 
             RecipeManager.craftingManager.addRecipe(

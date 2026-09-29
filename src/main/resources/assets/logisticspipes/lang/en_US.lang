@@ -232,6 +232,7 @@ item.ModuleCrafterMK3=Crafting module MK3
 item.ModuleSmartCrafter=Smart Crafting module
 item.ModuleCraftingBuffer=Crafting Buffer module
 item.ModuleFluidCraftingBuffer=Fluid Crafting Buffer module
+item.ModuleFluidSink=Fluid Sink module
 item.ModuleActiveSupplier=Active Supplier Module
 item.ModuleCreativeTabBasedItemSink=Creative Tab Based ItemSink module
 item.ModuleTypeFilterItemSink=Type Filter ItemSink module
@@ -397,6 +398,9 @@ gui.itemsink.Defaultroute=Default route
 gui.itemsink.IgnoreData=Ignore Data
 gui.itemsink.IgnoreNBT=Ignore NBT
 gui.itemsink.import=Import
+gui.fluidsink.Yes=Yes
+gui.fluidsink.No=No
+gui.fluidsink.Defaultroute=Default route
 
 gui.crafting.Inputs=Inputs
 gui.crafting.Import=Import
@@ -497,6 +501,7 @@ gui.sortmode.size=SIZE
 gui.sortmode.name=NAME
 
 gui.module.requestedItems=Requested items
+gui.fluidsink.requestedFluids=Requested fluids
 gui.module.ModuleExtractor=Extract orientation
 gui.module.ModuleTerminus=Terminated items
 gui.module.ModuleAdvancedExtractor=Item list
