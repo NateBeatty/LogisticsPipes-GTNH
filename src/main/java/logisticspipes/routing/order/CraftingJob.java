@@ -69,6 +69,14 @@ public class CraftingJob {
     @Getter
     @Setter(AccessLevel.PACKAGE)
     private boolean replanShort;
+    /**
+     * An open order of this job went away without being sent: the pipe holding it was broken or unloaded, or its
+     * chassis lost the module that would have made it. The job can't finish as planned. Only a flag; nothing else about
+     * the job changes, so it is up to a requester that cares (the Trickle Supplier) to cancel and request again.
+     */
+    @Getter
+    @Setter(AccessLevel.PACKAGE)
+    private boolean ordersLost;
 
     private final List<Placed> orders = new ArrayList<>();
     private int open = 0;
