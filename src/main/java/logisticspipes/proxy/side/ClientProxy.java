@@ -1,6 +1,7 @@
 package logisticspipes.proxy.side;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 import net.minecraft.client.Minecraft;
@@ -15,6 +16,7 @@ import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.MovingObjectPosition;
+import net.minecraft.util.StatCollector;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraftforge.client.IItemRenderer;
@@ -50,6 +52,7 @@ import logisticspipes.network.PacketHandler;
 import logisticspipes.network.packets.gui.DummyContainerSlotClick;
 import logisticspipes.network.packets.gui.GUIPacket;
 import logisticspipes.network.packets.orderer.ComponentList;
+import logisticspipes.network.packets.orderer.CrafterLocations;
 import logisticspipes.network.packets.orderer.MissingItems;
 import logisticspipes.network.packets.pipe.MostLikelyRecipeComponentsResponse;
 import logisticspipes.pipefxhandlers.Particles;
@@ -68,11 +71,13 @@ import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.proxy.interfaces.IProxy;
+import logisticspipes.renderer.LocateHighlighter;
 import logisticspipes.renderer.LogisticsPipeItemRenderer;
 import logisticspipes.renderer.LogisticsPipeWorldRenderer;
 import logisticspipes.renderer.LogisticsRenderPipe;
 import logisticspipes.renderer.LogisticsSolidBlockWorldRenderer;
 import logisticspipes.renderer.newpipe.GLRenderListHandler;
+import logisticspipes.request.CrafterLocator;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.textures.Textures;
 import logisticspipes.utils.FluidIdentifier;
@@ -433,6 +438,65 @@ public class ClientProxy implements IProxy {
                 }
                 player.addChatComponentMessage(new ChatComponentText(ChatColor.GREEN + "Request successful!"));
             }
+    }
+
+    /** How many crafters Locate lists in chat; all of them are highlighted. */
+    private static final int LOCATE_CHAT_LINES = 10;
+
+    @Override
+    public void processCrafterLocations(CrafterLocations packet, EntityPlayer player) {
+        String itemName = packet.getItem() == null ? "?" : packet.getItem().getFriendlyName();
+        List<CrafterLocator.Location> locations = new ArrayList<>(packet.getLocations());
+        if (locations.isEmpty()) {
+            player.addChatComponentMessage(
+                    new ChatComponentText(
+                            ChatColor.RED + StatCollector.translateToLocalFormatted("lp.locate.none", itemName)));
+            return;
+        }
+        int dimension = player.worldObj.provider.dimensionId;
+        // This dimension first, nearest first.
+        locations.sort(
+                Comparator.comparing((CrafterLocator.Location l) -> l.dimension != dimension)
+                        .thenComparingDouble(l -> player.getDistanceSq(l.x + 0.5, l.y + 0.5, l.z + 0.5)));
+        player.addChatComponentMessage(
+                new ChatComponentText(
+                        ChatColor.GOLD
+                                + StatCollector.translateToLocalFormatted("lp.locate.header", itemName, locations.size())));
+        for (int i = 0; i < locations.size() && i < LOCATE_CHAT_LINES; i++) {
+            CrafterLocator.Location l = locations.get(i);
+            String machine = l.machine != null ? l.machine.getDisplayName()
+                    : StatCollector.translateToLocal("lp.locate.nomachine");
+            String kind = l.chassisSlot >= 0
+                    ? StatCollector.translateToLocalFormatted("lp.locate.slot", l.chassisSlot + 1)
+                    : StatCollector.translateToLocal("lp.locate.pipe");
+            String line = ChatColor.AQUA + " (" + l.x + ", " + l.y + ", " + l.z + ")"
+                    + ChatColor.GRAY + " Dim " + l.dimension
+                    + ChatColor.WHITE + " - " + machine
+                    + ChatColor.GRAY + " - " + kind;
+            if (l.dimension != dimension) {
+                line += " (" + StatCollector.translateToLocal("lp.locate.otherdim") + ")";
+            }
+            player.addChatComponentMessage(new ChatComponentText(line));
+        }
+        if (locations.size() > LOCATE_CHAT_LINES) {
+            player.addChatComponentMessage(
+                    new ChatComponentText(
+                            ChatColor.GRAY + StatCollector
+                                    .translateToLocalFormatted("lp.locate.more", locations.size() - LOCATE_CHAT_LINES)));
+        }
+
+        LocateHighlighter highlighter = LocateHighlighter.INSTANCE;
+        highlighter.clear();
+        for (CrafterLocator.Location l : locations) {
+            if (l.dimension != dimension) {
+                continue;
+            }
+            highlighter.add(l.x, l.y, l.z, LocateHighlighter.PIPE_COLOR);
+            if (l.hasMachine) {
+                highlighter.add(l.machineX, l.machineY, l.machineZ, LocateHighlighter.MACHINE_COLOR);
+            }
+        }
+        highlighter.start(dimension);
     }
 
     @Override

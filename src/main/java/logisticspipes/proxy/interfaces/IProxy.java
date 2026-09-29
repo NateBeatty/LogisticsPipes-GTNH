@@ -13,6 +13,7 @@ import logisticspipes.items.ItemLogisticsPipe;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.network.packets.gui.GUIPacket;
 import logisticspipes.network.packets.orderer.ComponentList;
+import logisticspipes.network.packets.orderer.CrafterLocations;
 import logisticspipes.network.packets.orderer.MissingItems;
 import logisticspipes.network.packets.pipe.MostLikelyRecipeComponentsResponse;
 import logisticspipes.pipes.basic.CoreUnroutedPipe;
@@ -83,6 +84,8 @@ public interface IProxy {
     default void processComponentListPacket(ComponentList packet, EntityPlayer player) {}
 
     default void processMissingItemsPacket(MissingItems packet, EntityPlayer player) {}
+
+    default void processCrafterLocations(CrafterLocations packet, EntityPlayer player) {}
 
     default void processMostLikelyRecipeComponentsResponse(MostLikelyRecipeComponentsResponse packet) {}
 

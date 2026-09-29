@@ -38,6 +38,7 @@ import logisticspipes.network.PacketHandler;
 import logisticspipes.network.packets.block.ClearCraftingGridPacket;
 import logisticspipes.network.packets.block.CraftingCycleRecipe;
 import logisticspipes.network.packets.orderer.DiskRequestConectPacket;
+import logisticspipes.network.packets.orderer.LocateCraftersPacket;
 import logisticspipes.network.packets.orderer.OrdererRefreshRequestPacket;
 import logisticspipes.network.packets.orderer.RequestComponentPacket;
 import logisticspipes.network.packets.orderer.RequestSubmitListPacket;
@@ -79,6 +80,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
     protected DisplayOptions displayOptions = DisplayOptions.Both;
     public final PipeBlockRequestTable _table;
     private SmallGuiButton Macrobutton;
+    private SmallGuiButton locateButton;
 
     public final EntityPlayer _entityPlayer;
     public ItemDisplay itemDisplay;
@@ -150,6 +152,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
         buttonList.clear();
         // @formatter:off
         buttonList.add(hideWhileSmall.addChain(new GuiButton(0, right - 55, bottom - 25, 50, 20, "Request"))); // Request
+        buttonList.add(hideWhileSmall.addChain(locateButton = new SmallGuiButton(19, right - 55, bottom - 38, 50, 10, "Locate"))); // Locate
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(1, right - 15, guiTop + 5, 10, 10, ">"))); // Next
         // page
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(2, right - 90, guiTop + 5, 10, 10, "<"))); // Prev
@@ -573,6 +576,11 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
                     PacketHandler.getPacket(RequestComponentPacket.class).setDimension(dimension)
                             .setStack(itemDisplay.getSelectedItem().getItem().makeStack(itemDisplay.getRequestCount()))
                             .setTilePos(_table.container));
+        } else if (guibutton.id == 19 && itemDisplay.getSelectedItem() != null) {
+            MainProxy.sendPacketToServer(
+                    PacketHandler.getPacket(LocateCraftersPacket.class).setDimension(dimension)
+                            .setStack(itemDisplay.getSelectedItem().getItem().makeStack(1))
+                            .setTilePos(_table.container));
         } else if (guibutton.id == 9) {
             String displayString = "";
             switch (displayOptions) {
@@ -699,6 +707,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
             return;
         }
         GuiGraphics.displayItemToolTip(itemDisplay.getToolTip(), this, zLevel, guiLeft, guiTop);
+        locateButton.enabled = itemDisplay.getSelectedItem() != null;
         Macrobutton.enabled = _table.diskInv.getStackInSlot(0) != null
                 && _table.diskInv.getStackInSlot(0).getItem().equals(LogisticsPipes.LogisticsItemDisk);
     }

@@ -135,6 +135,7 @@ import logisticspipes.recipes.RecipeManager;
 import logisticspipes.recipes.SolderingStationRecipes;
 import logisticspipes.renderer.FluidContainerRenderer;
 import logisticspipes.renderer.ItemModuleRenderer;
+import logisticspipes.renderer.LocateHighlighter;
 import logisticspipes.renderer.LogisticsHUDRenderer;
 import logisticspipes.renderer.LogisticsPipeItemRenderer;
 import logisticspipes.renderer.newpipe.LogisticsNewRenderPipe;
@@ -323,6 +324,7 @@ public class LogisticsPipes {
 
         if (event.getSide().equals(Side.CLIENT)) {
             FMLCommonHandler.instance().bus().register(new RenderTickHandler());
+            MinecraftForge.EVENT_BUS.register(LocateHighlighter.INSTANCE);
         }
         FMLCommonHandler.instance().bus().register(new QueuedTasks());
         if (event.getSide() == Side.CLIENT) {
