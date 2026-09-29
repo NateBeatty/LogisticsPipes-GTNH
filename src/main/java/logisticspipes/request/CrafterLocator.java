@@ -200,8 +200,9 @@ public class CrafterLocator {
             if (stack != null && stack.getItem() != null) {
                 return stack;
             }
-        } catch (RuntimeException ignored) {
-            // Some blocks assume a client-side player here; fall back below.
+        } catch (RuntimeException | LinkageError ignored) {
+            // Some blocks assume a client-side player here. On a dedicated server, Forge's default getPickBlock calls
+            // the client-only Block.getItem(World, x, y, z) and throws NoSuchMethodError. Fall back below.
         }
         Item item = Item.getItemFromBlock(block);
         return item == null ? null : new ItemStack(item, 1, block.getDamageValue(world, x, y, z));
