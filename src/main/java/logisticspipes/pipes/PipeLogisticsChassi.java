@@ -74,6 +74,7 @@ import logisticspipes.request.RequestTreeNode;
 import logisticspipes.request.resources.DictResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.routing.LogisticsPromise;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
 import logisticspipes.routing.order.LogisticsOrder;
@@ -347,12 +348,14 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
     @Override
     public void InventoryChanged(IInventory inventory) {
         boolean reInitGui = false;
+        boolean modulesChanged = false;
         for (int i = 0; i < inventory.getSizeInventory(); i++) {
             ItemStack stack = inventory.getStackInSlot(i);
             if (stack == null) {
                 if (_module.hasModule(i)) {
                     _module.removeModule(i);
                     reInitGui = true;
+                    modulesChanged = true;
                 }
                 continue;
             }
@@ -365,6 +368,7 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
                 next.registerCCEventQueuer(this);
                 if (current != next) {
                     _module.installModule(i, next);
+                    modulesChanged = true;
                     if (!MainProxy.isClient()) {
                         ItemModuleInformationManager.readInformation(stack, next);
                     }
@@ -372,6 +376,14 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
                 }
                 inventory.setInventorySlotContents(i, stack);
             }
+        }
+        if (modulesChanged) {
+            // All modules share one queue, so only the crafts no module here can make any more are lost. Putting the
+            // same module straight back loses nothing: the new one carries on with the orders.
+            CraftingJobs.ordersLost(
+                    _orderItemManager,
+                    order -> order.getType() == ResourceType.CRAFTING && order instanceof LogisticsItemOrder
+                            && !canCraft(((LogisticsItemOrder) order).getResource()));
         }
         if (reInitGui) {
             if (MainProxy.isClient(getWorld())) {

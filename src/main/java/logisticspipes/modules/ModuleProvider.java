@@ -256,7 +256,7 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
             }
         }
         for (ItemIdentifier item : possible) {
-            int canProvide = getAvailableItemCount(item);
+            int canProvide = getProvidableCount(item, root);
             canProvide -= root.getAllPromissesFor((IProvideItems) _service, item);
             canProvide = Math.min(canProvide, tree.getMissingAmount());
             if (canProvide < 1) {
@@ -281,7 +281,13 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
                 info);
     }
 
-    private int getAvailableItemCount(ItemIdentifier item) {
+    /** How many of an item this provider may offer to a request, before promises already made in that request. */
+    protected int getProvidableCount(ItemIdentifier item, RequestTree root) {
+        return getAvailableItemCount(item);
+    }
+
+    /** In the inventory and allowed by the filter, less what is already promised to earlier requests. */
+    protected int getAvailableItemCount(ItemIdentifier item) {
         return getTotalItemCount(item) - _service.getItemOrderManager().totalItemsCountInOrders(item);
     }
 

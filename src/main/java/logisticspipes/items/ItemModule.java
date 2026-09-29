@@ -32,6 +32,7 @@ import logisticspipes.modules.ModuleApiaristAnalyser;
 import logisticspipes.modules.ModuleApiaristRefiller;
 import logisticspipes.modules.ModuleApiaristSink;
 import logisticspipes.modules.ModuleApiaristTerminus;
+import logisticspipes.modules.ModuleBufferProvider;
 import logisticspipes.modules.ModuleCCBasedItemSink;
 import logisticspipes.modules.ModuleCCBasedQuickSort;
 import logisticspipes.modules.ModuleCrafter;
@@ -39,8 +40,6 @@ import logisticspipes.modules.ModuleCrafterMK2;
 import logisticspipes.modules.ModuleCrafterMK3;
 import logisticspipes.modules.ModuleCraftingBuffer;
 import logisticspipes.modules.ModuleCreativeTabBasedItemSink;
-import logisticspipes.modules.ModuleFluidCraftingBuffer;
-import logisticspipes.modules.ModuleFluidSink;
 import logisticspipes.modules.ModuleElectricBuffer;
 import logisticspipes.modules.ModuleElectricManager;
 import logisticspipes.modules.ModuleEnchantmentSink;
@@ -48,6 +47,8 @@ import logisticspipes.modules.ModuleEnchantmentSinkMK2;
 import logisticspipes.modules.ModuleExtractor;
 import logisticspipes.modules.ModuleExtractorMk2;
 import logisticspipes.modules.ModuleExtractorMk3;
+import logisticspipes.modules.ModuleFluidCraftingBuffer;
+import logisticspipes.modules.ModuleFluidSink;
 import logisticspipes.modules.ModuleItemSink;
 import logisticspipes.modules.ModuleModBasedItemSink;
 import logisticspipes.modules.ModuleOreDictItemSink;
@@ -59,6 +60,7 @@ import logisticspipes.modules.ModuleQuickSort;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.modules.ModuleTerminus;
 import logisticspipes.modules.ModuleThaumicAspectSink;
+import logisticspipes.modules.ModuleTrickleSupplier;
 import logisticspipes.modules.ModuleTypeFilterItemSink;
 import logisticspipes.modules.abstractmodules.LogisticsGuiModule;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
@@ -112,6 +114,8 @@ public class ItemModule extends LogisticsItem {
     public static final int PROVIDER = 500;
     public static final int PROVIDER_MK2 = 501;
     public static final int ACTIVE_SUPPLIER = 502;
+    public static final int BUFFER_PROVIDER = 503;
+    public static final int TRICKLE_SUPPLIER = 504;
 
     // Crafter MODULES
     public static final int CRAFTER = 600;
@@ -216,6 +220,8 @@ public class ItemModule extends LogisticsItem {
         registerModule(ItemModule.FLUID_CRAFTING_BUFFER, ModuleFluidCraftingBuffer.class);
         registerModule(ItemModule.FLUIDSINK, ModuleFluidSink.class);
         registerModule(ItemModule.ACTIVE_SUPPLIER, ModuleActiveSupplier.class);
+        registerModule(ItemModule.BUFFER_PROVIDER, ModuleBufferProvider.class);
+        registerModule(ItemModule.TRICKLE_SUPPLIER, ModuleTrickleSupplier.class);
         registerModule(ItemModule.CREATIVETABBASEDITEMSINK, ModuleCreativeTabBasedItemSink.class);
 
         if (LogisticsPipes.isGTNH) {

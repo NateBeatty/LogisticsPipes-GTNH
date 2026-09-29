@@ -99,6 +99,7 @@ import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.ItemRoutingInformation;
 import logisticspipes.routing.ServerRouter;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider;
 import logisticspipes.routing.order.LogisticsItemOrderManager;
 import logisticspipes.routing.order.LogisticsOrderManager;
@@ -596,6 +597,8 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
     @Override
     public void invalidate() {
         super.invalidate();
+        // Its queue goes with it; flag the jobs that were counting on it.
+        CraftingJobs.ordersLost(_orderItemManager, null);
         if (router != null) {
             router.destroy();
             router = null;
@@ -605,6 +608,8 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
     @Override
     public void onChunkUnload() {
         super.onChunkUnload();
+        // Orders aren't saved, so they are gone once the chunk unloads.
+        CraftingJobs.ordersLost(_orderItemManager, null);
         if (router != null) {
             router.clearPipeCache();
             router.clearInterests();

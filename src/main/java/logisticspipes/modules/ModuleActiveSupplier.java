@@ -179,7 +179,8 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
 
     private final ItemIdentifierInventory dummyInventory = new ItemIdentifierInventory(9, "", 127);
 
-    private final HashMap<ItemIdentifier, Integer> _requestedItems = new HashMap<>();
+    /** Items requested and not yet arrived or reported lost. */
+    protected final HashMap<ItemIdentifier, Integer> _requestedItems = new HashMap<>();
 
     public enum SupplyMode {
         Partial,
@@ -215,7 +216,11 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
         if (!_service.isNthTick(100)) {
             return;
         }
+        supply();
+    }
 
+    /** Checks every adjacent inventory and requests what is missing. */
+    protected void supply() {
         for (int amount : _requestedItems.values()) {
             if (amount > 0) {
                 _service.spawnParticle(Particles.VioletParticle, 2);
@@ -246,7 +251,7 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
         }
     }
 
-    private void createPatternRequest(IInventoryUtil invUtil) {
+    protected void createPatternRequest(IInventoryUtil invUtil) {
         _service.getDebug().log("Supplier: Start calculating pattern request");
         setRequestFailed(false);
         for (int i = 0; i < 9; i++) {
@@ -326,7 +331,7 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
         }
     }
 
-    private void createSupplyRequest(IInventoryUtil invUtil) {
+    protected void createSupplyRequest(IInventoryUtil invUtil) {
         _service.getDebug().log("Supplier: Start calculating supply request");
         // How many do I want?
         HashMap<ItemIdentifier, Integer> needed = new HashMap<>(dummyInventory.getItemsAndCount());

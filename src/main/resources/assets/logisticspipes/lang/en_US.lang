@@ -234,6 +234,8 @@ item.ModuleCraftingBuffer=Crafting Buffer module
 item.ModuleFluidCraftingBuffer=Fluid Crafting Buffer module
 item.ModuleFluidSink=Fluid Sink module
 item.ModuleActiveSupplier=Active Supplier Module
+item.ModuleTrickleSupplier=Trickle Supplier Module
+item.ModuleBufferProvider=Buffer Provider module
 item.ModuleCreativeTabBasedItemSink=Creative Tab Based ItemSink module
 item.ModuleTypeFilterItemSink=Type Filter ItemSink module
 
@@ -507,6 +509,7 @@ gui.module.ModuleTerminus=Terminated items
 gui.module.ModuleAdvancedExtractor=Item list
 gui.module.ModuleProvider=Items to provide (or empty for all)
 gui.module.ModuleProvider.ExcessInventory=Excess Inventory:
+gui.module.ModuleBufferProvider.Share=Share
 gui.module.ModuleElectricManager.ExcessInventory=Electric Items
 gui.module.ModuleThaumicAspectSink=Aspect Reader
 gui.module.ModuleThaumicAspectSink.sunk=Sunk Aspects

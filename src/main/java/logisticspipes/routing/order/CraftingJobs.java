@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import logisticspipes.LogisticsPipes;
 import logisticspipes.modules.ModuleSmartCrafter;
@@ -272,6 +273,24 @@ public final class CraftingJobs {
         CraftingJob job = order.getJob();
         if (job != null && job.closed(order)) {
             ended(job);
+        }
+    }
+
+    /**
+     * A queue's open orders are going away without being sent: its pipe is being broken or unloaded (orders aren't
+     * saved), or its chassis lost the module that would have made them. Flags their jobs
+     * ({@link CraftingJob#isOrdersLost()}); the orders themselves are left as they were.
+     *
+     * @param which the orders affected, or null for all of them
+     */
+    public static void ordersLost(LogisticsOrderManager<?, ?> manager, Predicate<LogisticsOrder> which) {
+        if (manager == null) {
+            return;
+        }
+        for (LogisticsOrder order : manager) {
+            if (!order.isFinished() && order.getJob() != null && (which == null || which.test(order))) {
+                order.getJob().setOrdersLost(true);
+            }
         }
     }
 
