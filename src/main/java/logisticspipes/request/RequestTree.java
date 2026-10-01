@@ -167,14 +167,19 @@ public class RequestTree extends RequestTreeNode {
                 }
             }
 
+            return Double.compare(sortKey(o1), sortKey(o2));
+        }
+
+        // Compared as doubles: routes without canRouteTo (e.g. through a BC iron pipe) carry
+        // distanceToDestination = Integer.MAX_VALUE, and the old int arithmetic clamped on them, breaking the
+        // comparator contract (TimSort "Comparison method violates its general contract!").
+        private double sortKey(ExitRoute route) {
             // GetLoadFactor*64 should be an integer anyway.
-            c = (int) Math.floor(o1.destination.getCachedPipe().getLoadFactor() * 64)
-                    - (int) Math.floor(o2.destination.getCachedPipe().getLoadFactor() * 64);
+            double key = Math.floor(route.destination.getCachedPipe().getLoadFactor() * 64);
             if (distanceWeight != 0) {
-                c += (int) (Math.floor(o1.distanceToDestination * 64) - (int) Math.floor(o2.distanceToDestination * 64))
-                        * distanceWeight;
+                key += Math.floor(route.distanceToDestination * 64) * distanceWeight;
             }
-            return c;
+            return key;
         }
     }
 
