@@ -170,14 +170,15 @@ public class RequestTree extends RequestTreeNode {
             return Double.compare(sortKey(o1), sortKey(o2));
         }
 
-        // Compared as doubles: routes without canRouteTo (e.g. through a BC iron pipe) carry
-        // distanceToDestination = Integer.MAX_VALUE, and the old int arithmetic clamped on them, breaking the
+        // Compared as doubles: routes missing a direction flag (e.g. through a BC iron pipe) carry
+        // Integer.MAX_VALUE as that direction's distance, and the old int arithmetic clamped on them, breaking the
         // comparator contract (TimSort "Comparison method violates its general contract!").
         private double sortKey(ExitRoute route) {
             // GetLoadFactor*64 should be an integer anyway.
             double key = Math.floor(route.destination.getCachedPipe().getLoadFactor() * 64);
             if (distanceWeight != 0) {
-                key += Math.floor(route.distanceToDestination * 64) * distanceWeight;
+                // Requested items travel from the provider back to the requester, so rank by that direction.
+                key += Math.floor(route.destinationDistanceToRoot * 64) * distanceWeight;
             }
             return key;
         }
