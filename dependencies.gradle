@@ -4,7 +4,7 @@ dependencies {
     api('com.github.GTNewHorizons:BuildCraft:7.1.60:dev')
 
     implementation('com.github.GTNewHorizons:NotEnoughItems:2.8.100-GTNH:dev')
-    implementation("com.github.GTNewHorizons:ModularUI2:2.3.72-1.7.10:dev")
+    implementation("com.github.GTNewHorizons:ModularUI2:2.3.63-1.7.10:dev")
 
     compileOnly('com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-971-GTNH:api') { transitive = false }
     compileOnly('com.github.GTNewHorizons:Binnie:2.6.32:dev') { transitive = false }

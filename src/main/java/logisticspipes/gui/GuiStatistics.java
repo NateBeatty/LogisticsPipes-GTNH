@@ -122,7 +122,9 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     private int move_left;
 
     public GuiStatistics(final LogisticsStatisticsTileEntity tile) {
-        super(256, 220, 0, 0);
+        // ItemDisplay lays out 20px slots from x = 2 and only wraps once a slot starts past its width, so the item areas
+        // (xSize - 20 wide) need a width that is a multiple of 20 for the last column to fit inside the box.
+        super(260, 220, 0, 0);
         this.tile = tile;
     }
 
@@ -192,7 +194,9 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                     true);
             itemDisplay_2.setItemList(new ArrayList<>());
         }
-        itemDisplay_2.reposition(guiLeft + 10, guiTop + 80, xSize - 20, 125);
+        // A multiple of 20 too: ItemDisplay sizes a page as width * height / 400, so 125 put a few items on a 7th row
+        // below the box.
+        itemDisplay_2.reposition(guiLeft + 10, guiTop + 80, xSize - 20, 120);
 
         updateItemList();
     }

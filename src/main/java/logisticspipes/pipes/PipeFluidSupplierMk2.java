@@ -75,12 +75,10 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
                                                         .marginLeft(6).width(16).height(16))
                                         .child(
                                                 new TextFieldWidget().marginLeft(6).width(80)
-                                                        .numbersInt(0, Integer.MAX_VALUE).value(
-                                                                SyncHandlers
-                                                                        .intNumber(
-                                                                                () -> amount,
-                                                                                value -> this.amount = value)
-                                                                        .allowC2S()))
+                                                        .setNumbers(0, Integer.MAX_VALUE).value(
+                                                                SyncHandlers.intNumber(
+                                                                        () -> amount,
+                                                                        value -> this.amount = value)))
                                         .child(IKey.str("mB").asWidget().marginLeft(3)))
                         .child(
                                 Flow.row().mainAxisAlignment(Alignment.MainAxis.CENTER)
@@ -92,11 +90,9 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
                                         .child(
                                                 new CycleButtonWidget().marginLeft(6).width(24)
                                                         .value(
-                                                                SyncHandlers
-                                                                        .bool(
-                                                                                () -> this.requestPartials,
-                                                                                value -> this.requestPartials = value)
-                                                                        .allowC2S())
+                                                                SyncHandlers.bool(
+                                                                        () -> this.requestPartials,
+                                                                        value -> this.requestPartials = value))
                                                         .overlay(
                                                                 IKey.lang(
                                                                         () -> this.requestPartials
@@ -127,12 +123,10 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
                                 Flow.row().marginTop(5).mainAxisAlignment(Alignment.MainAxis.CENTER)
                                         .coverChildrenHeight()
                                         .child(
-                                                new TextFieldWidget().width(80).numbersInt(0, Integer.MAX_VALUE).value(
-                                                        SyncHandlers
-                                                                .intNumber(
-                                                                        () -> refillThreshold,
-                                                                        value -> this.refillThreshold = value)
-                                                                .allowC2S())
+                                                new TextFieldWidget().width(80).setNumbers(0, Integer.MAX_VALUE).value(
+                                                        SyncHandlers.intNumber(
+                                                                () -> refillThreshold,
+                                                                value -> this.refillThreshold = value))
 
                                         ).child(IKey.str("mB").asWidget().marginLeft(3))
                                         .child(IKey.str("§9[?]").asWidget().marginLeft(6).tooltipBuilder(tooltip -> {
