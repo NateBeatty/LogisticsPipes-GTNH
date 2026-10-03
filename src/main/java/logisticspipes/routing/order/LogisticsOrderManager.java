@@ -113,6 +113,9 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
     public void sendSuccessfull(int number, boolean defersend, IRoutedItem item) {
         CraftingJobs.orderProgressed(_orders.getFirst(), number);
         _orders.getFirst().reduceAmountBy(number);
+        if (item != null && item.getInfo() != null) {
+            item.getInfo().job = _orders.getFirst().getJob();
+        }
         if (_orders.getFirst().isWatched() && item != null) {
             IDistanceTracker tracker = new DistanceTracker();
             item.setDistanceTracker(tracker);

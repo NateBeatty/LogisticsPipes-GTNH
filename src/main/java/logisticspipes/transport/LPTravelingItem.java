@@ -27,6 +27,8 @@ import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.IRouterManager;
 import logisticspipes.routing.ItemRoutingInformation;
+import logisticspipes.routing.order.CraftingJob;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IDistanceTracker;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.SlidingWindowBitSet;
@@ -284,6 +286,7 @@ public abstract class LPTravelingItem {
             info.arrived = false;
             info._transportMode = TransportMode.Unknown;
             info.targetInfo = null;
+            info.job = null;
         }
 
         public void itemWasLost() {
@@ -296,16 +299,25 @@ public abstract class LPTravelingItem {
                 IRouter destinationRouter = SimpleServiceLocator.routerManager.getRouter(info.destinationint);
                 if (destinationRouter.getPipe() != null) {
                     destinationRouter.getPipe().notifyOfReroute(info);
-                    if (destinationRouter.getPipe() instanceof IRequireReliableTransport) {
-                        ((IRequireReliableTransport) destinationRouter.getPipe())
-                                .itemLost(info.getItem().clone(), info.targetInfo);
-                    }
-                    if (destinationRouter.getPipe() instanceof IRequireReliableFluidTransport) {
-                        if (info.getItem().getItem().isFluidContainer()) {
-                            FluidStack liquid = SimpleServiceLocator.logisticsFluidManager
-                                    .getFluidFromContainer(info.getItem());
-                            ((IRequireReliableFluidTransport) destinationRouter.getPipe())
-                                    .liquidLost(FluidIdentifier.get(liquid), liquid.amount);
+                    // The destination is told which job the item was for, the same way a failed delivery tells it, so
+                    // what it asks for in reply joins that job, or is dropped if the job was cancelled.
+                    CraftingJob previous = info.job != null ? CraftingJobs.enter(info.job) : null;
+                    try {
+                        if (destinationRouter.getPipe() instanceof IRequireReliableTransport) {
+                            ((IRequireReliableTransport) destinationRouter.getPipe())
+                                    .itemLost(info.getItem().clone(), info.targetInfo);
+                        }
+                        if (destinationRouter.getPipe() instanceof IRequireReliableFluidTransport) {
+                            if (info.getItem().getItem().isFluidContainer()) {
+                                FluidStack liquid = SimpleServiceLocator.logisticsFluidManager
+                                        .getFluidFromContainer(info.getItem());
+                                ((IRequireReliableFluidTransport) destinationRouter.getPipe())
+                                        .liquidLost(FluidIdentifier.get(liquid), liquid.amount);
+                            }
+                        }
+                    } finally {
+                        if (info.job != null) {
+                            CraftingJobs.exit(previous);
                         }
                     }
                 }

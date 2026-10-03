@@ -38,6 +38,7 @@ import logisticspipes.network.packets.satpipe.SatPipeSetID;
 import logisticspipes.pipes.basic.fluid.FluidRoutedPipe;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.request.RequestTree;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.textures.Textures;
 import logisticspipes.textures.Textures.TextureType;
 import logisticspipes.utils.FluidIdentifier;
@@ -321,6 +322,10 @@ public class PipeFluidSatellite extends FluidRoutedPipe implements IRequestFluid
 
     @Override
     public void liquidLost(FluidIdentifier item, int amount) {
+        if (CraftingJobs.currentIsCancelled()) {
+            // The request it was for is gone: asking again would only bring fluid nobody wants.
+            return;
+        }
         if (_lostItems.containsKey(item)) {
             _lostItems.put(item, _lostItems.get(item) + amount);
         } else {

@@ -185,6 +185,14 @@ public final class CraftingJobs {
     }
 
     /**
+     * Whether the job in scope was cancelled. A destination told an item was lost checks this before asking for it
+     * again: the request it was for is gone.
+     */
+    public static boolean currentIsCancelled() {
+        return current != null && current.isCancelled();
+    }
+
+    /**
      * A job for a request that is about to be fulfilled. If a request is already being worked on (a re-request after a
      * failed delivery, or a re-plan) the new orders join that job instead of starting their own.
      */

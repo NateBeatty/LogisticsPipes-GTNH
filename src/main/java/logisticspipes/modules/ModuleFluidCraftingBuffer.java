@@ -1,11 +1,10 @@
 package logisticspipes.modules;
 
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashSet;
 
 import net.minecraft.client.renderer.texture.IIconRegister;
 import net.minecraft.nbt.NBTTagCompound;
@@ -35,15 +34,15 @@ import logisticspipes.utils.item.ItemIdentifierStack;
  * Holds the FLUID intermediates of a craft until the crafter that needs them has room for them, in a tank the player
  * provides and can expand (a Multi-Fluid Tank, an RF tank, ...) that can hold several fluids at once.
  * <p>
- * The fluid equivalent of {@link ModuleCraftingBuffer}, which holds intermediates in a chest. The stock is pooled
- * (the fluid isn't tagged with an owner), but each Smart Crafter keeps a <b>credit</b> for what sub-crafters sent to a
+ * The fluid equivalent of {@link ModuleCraftingBuffer}, which holds intermediates in a chest. The stock is pooled (the
+ * fluid isn't tagged with an owner), but each Smart Crafter keeps a <b>credit</b> for what sub-crafters sent to a
  * buffer on its behalf, and takes no more than that ({@code ModuleSmartCrafter.fluidBuffered}). Stock beyond all
  * crafters' credit is an <b>orphan</b> and is drained back into the network ({@link #returnAllOrphans}).
  * <p>
  * A fluid reaches this module the way every fluid does in LP: as an ordinary routed item holding a container. Only the
  * receiving end is fluid-specific, and that is {@link IFluidContainerReceiver}. The chassis already forwards an
- * addressed container to its modules, so a producer that wants to buffer a fluid simply routes a container here (Active)
- * and this module pours it into the tank it faces, sending whatever doesn't fit back out.
+ * addressed container to its modules, so a producer that wants to buffer a fluid simply routes a container here
+ * (Active) and this module pours it into the tank it faces, sending whatever doesn't fit back out.
  * <p>
  * Like the item buffer, this only accepts a fluid a crafter has credit for and only while there is room. It never acts
  * as a general fluid sink, so it can't become a second storage system.

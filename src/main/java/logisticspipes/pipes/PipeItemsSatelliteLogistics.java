@@ -45,6 +45,8 @@ import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.RequestTree;
+import logisticspipes.routing.order.CraftingJob;
+import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.security.SecuritySettings;
 import logisticspipes.textures.Textures;
 import logisticspipes.textures.Textures.TextureType;
@@ -53,6 +55,7 @@ import logisticspipes.utils.PlayerCollectionList;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import logisticspipes.utils.tuples.LPPosition;
+import logisticspipes.utils.tuples.Pair;
 
 public class PipeItemsSatelliteLogistics extends CoreRoutedPipe
         implements IRequestItems, IRequireReliableTransport, IHeadUpDisplayRendererProvider, IChestContentReceiver {
@@ -198,7 +201,8 @@ public class PipeItemsSatelliteLogistics extends CoreRoutedPipe
         PipeItemsSatelliteLogistics.AllSatellites.clear();
     }
 
-    protected final LinkedList<ItemIdentifierStack> _lostItems = new LinkedList<>();
+    /** Items to ask for again, with the job they were for when that is known. */
+    protected final LinkedList<Pair<ItemIdentifierStack, CraftingJob>> _lostItems = new LinkedList<>();
 
     public int satelliteId;
 
@@ -343,10 +347,23 @@ public class PipeItemsSatelliteLogistics extends CoreRoutedPipe
         if (_lostItems.isEmpty()) {
             return;
         }
-        final Iterator<ItemIdentifierStack> iterator = _lostItems.iterator();
+        final Iterator<Pair<ItemIdentifierStack, CraftingJob>> iterator = _lostItems.iterator();
         while (iterator.hasNext()) {
-            ItemIdentifierStack stack = iterator.next();
-            int received = RequestTree.requestPartial(stack, (CoreRoutedPipe) container.pipe, null);
+            Pair<ItemIdentifierStack, CraftingJob> lost = iterator.next();
+            ItemIdentifierStack stack = lost.getValue1();
+            CraftingJob job = lost.getValue2();
+            if (job != null && (job.isCancelled() || job.isDone())) {
+                // The request it was for is gone: asking again would only bring items nobody wants.
+                iterator.remove();
+                continue;
+            }
+            int received;
+            CraftingJob previous = CraftingJobs.enter(job);
+            try {
+                received = RequestTree.requestPartial(stack, (CoreRoutedPipe) container.pipe, null);
+            } finally {
+                CraftingJobs.exit(previous);
+            }
             if (received > 0) {
                 if (received == stack.getStackSize()) {
                     iterator.remove();
@@ -359,7 +376,7 @@ public class PipeItemsSatelliteLogistics extends CoreRoutedPipe
 
     @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
-        _lostItems.add(item);
+        _lostItems.add(new Pair<>(item, CraftingJobs.current()));
     }
 
     @Override

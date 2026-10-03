@@ -11,6 +11,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
 import logisticspipes.proxy.MainProxy;
+import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.IDistanceTracker;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import lombok.Getter;
@@ -39,6 +40,7 @@ public class ItemRoutingInformation {
         that.jamlist = new ArrayList<>(jamlist);
         that.tracker = tracker;
         that.targetInfo = targetInfo;
+        that.job = job;
         that.item = getItem().clone();
         return that;
     }
@@ -52,6 +54,11 @@ public class ItemRoutingInformation {
     public List<Integer> jamlist = new ArrayList<>();
     public IDistanceTracker tracker = null;
     public IAdditionalTargetInformation targetInfo;
+    /**
+     * The job whose order sent this item, so its destination knows which request a lost item was for and doesn't ask
+     * again for a cancelled one. Not saved: jobs don't survive a restart either.
+     */
+    public CraftingJob job;
 
     private long delay = 640 + MainProxy.getGlobalTick();
 

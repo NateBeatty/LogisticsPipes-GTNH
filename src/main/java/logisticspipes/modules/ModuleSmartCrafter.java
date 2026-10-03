@@ -501,9 +501,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Takes what the fluid buffers hold for a slot, up to this module's credit and the room its machine's tank still has,
-     * and pours it into the machine. Like {@link #pullFromBuffers}, buffered fluid has no provider to ask, so it has to be
-     * pulled once the gate opens; and like the gate, it is capped by the tank's room so the delivery never bounces.
+     * Takes what the fluid buffers hold for a slot, up to this module's credit and the room its machine's tank still
+     * has, and pours it into the machine. Like {@link #pullFromBuffers}, buffered fluid has no provider to ask, so it
+     * has to be pulled once the gate opens; and like the gate, it is capped by the tank's room so the delivery never
+     * bounces.
      */
     private void pullFluidFromBuffers(int slot, int wanted) {
         wanted = Math.min(wanted, fluidBuffered[slot]);
@@ -538,8 +539,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * How much of this fluid the gate allows into this module right now, in millibuckets: the released-set credit
-     * ({@code allowance}) capped by the room the machine's tank actually has, so a full machine reads zero and a producer
-     * buffers instead of flooding it. Integer.MAX_VALUE when the fluid is not a bufferable ingredient. Mirrors
+     * ({@code allowance}) capped by the room the machine's tank actually has, so a full machine reads zero and a
+     * producer buffers instead of flooding it. Integer.MAX_VALUE when the fluid is not a bufferable ingredient. Mirrors
      * {@link #getGatedAllowance} on the item side, plus the tank-room check that items get from the release-time sim.
      */
     public int getFluidGatedAllowance(FluidIdentifier fluid) {
@@ -578,8 +579,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * A fluid addressed to this module landed in the machine: whatever was on its way for the slot is now resolved
-     * (in the machine or bounced), so it is no longer in flight either way. Called on arrival.
+     * A fluid addressed to this module landed in the machine: whatever was on its way for the slot is now resolved (in
+     * the machine or bounced), so it is no longer in flight either way. Called on arrival.
      */
     private void onFluidDelivered(FluidIdentifier fluid, int amount) {
         if (fluid == null || amount <= 0) {
@@ -725,13 +726,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * Sends crafted fluid to whoever ordered it, mirroring {@code PipeFluidProvider}: drain the machine, wrap what came
      * out in a container and route it to the order's router (the requester), Active.
      * <p>
-     * For an output addressed to a satellite the fluid is drained from, and routed out through, that satellite's machine
-     * instead of the block this module faces. There is deliberately <b>no</b> {@code getBestReply} gate here: that check
-     * only sees {@code IFluidSink} storage, but a crafted fluid's destination is the order's requester — often another
-     * crafter's machine, which is not a sink — so the gate would hold fluid that has a perfectly good consumer (and
-     * {@code PipeFluidProvider} does exactly this: it sends to the order's router without a sink check). The requester is
-     * a real destination that decides for itself what to do with any overflow; the backpressure gate lives on the
-     * leftover that {@code sendRemainingFluid} default-routes to storage.
+     * For an output addressed to a satellite the fluid is drained from, and routed out through, that satellite's
+     * machine instead of the block this module faces. There is deliberately <b>no</b> {@code getBestReply} gate here:
+     * that check only sees {@code IFluidSink} storage, but a crafted fluid's destination is the order's requester —
+     * often another crafter's machine, which is not a sink — so the gate would hold fluid that has a perfectly good
+     * consumer (and {@code PipeFluidProvider} does exactly this: it sends to the order's router without a sink check).
+     * The requester is a real destination that decides for itself what to do with any overflow; the backpressure gate
+     * lives on the leftover that {@code sendRemainingFluid} default-routes to storage.
      */
     private void sendCraftedFluid() {
         if (fluidOrders == null || !getFluidOrders().hasOrders(ResourceType.CRAFTING)) {
@@ -829,7 +830,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
     }
 
-    /** The Smart Satellite a fluid output is addressed to, or null when the output goes to the block this module faces. */
+    /**
+     * The Smart Satellite a fluid output is addressed to, or null when the output goes to the block this module faces.
+     */
     private PipeSmartSatellite satelliteForOutput(FluidIdentifier fluid) {
         int out = outputSlotForFluid(fluid);
         if (out < 0 || outputSatelliteId[out] == 0) {
@@ -853,8 +856,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Rate-limited notice that a crafted fluid has nowhere to go. Sent to players near the module and to the server
-     * log so the player sees it while testing; the machine keeps holding meanwhile.
+     * Rate-limited notice that a crafted fluid has nowhere to go. Sent to players near the module and to the server log
+     * so the player sees it while testing; the machine keeps holding meanwhile.
      */
     private void warnNoFluidSink(FluidIdentifier fluid) {
         long t = now();
@@ -884,8 +887,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * <p>
      * Like {@link #sendCraftedFluid()} it drains nothing unless a reachable sink has room ({@code getBestReply}), so a
      * leftover that has nowhere to go is held in the machine rather than voided, and the player is warned at a rate
-     * limit. When the output is a satellite's the leftover goes out through that satellite, {@code sat}, instead of
-     * the block this module faces.
+     * limit. When the output is a satellite's the leftover goes out through that satellite, {@code sat}, instead of the
+     * block this module faces.
      */
     private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
             PipeSmartSatellite sat) {
@@ -894,7 +897,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         IRouter senderRouter = sat != null ? sat.getRouter() : getRouter();
-        // Probe with the whole leftover, not 1 mB: PipeFluidBasic.sinkAmount caps its answer at the stack's amount, so a
+        // Probe with the whole leftover, not 1 mB: PipeFluidBasic.sinkAmount caps its answer at the stack's amount, so
+        // a
         // 1-mB probe reports it can take only 1 and would strand the rest of the set's excess in the machine.
         Pair<Integer, Integer> reply = SimpleServiceLocator.logisticsFluidManager
                 .getBestReply(fluid.makeFluidStack(left), senderRouter, new ArrayList<Integer>());
@@ -1214,7 +1218,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return outputChance[output] < GUARANTEED;
     }
 
-    /** See {@link #outputSatelliteId}: read by {@link #resultSourcesFor} to pull this output from a satellite's machine. */
+    /**
+     * See {@link #outputSatelliteId}: read by {@link #resultSourcesFor} to pull this output from a satellite's machine.
+     */
     public int getOutputSatelliteId(int output) {
         return outputSatelliteId[output];
     }
@@ -1224,10 +1230,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Which machine the extraction loop pulls a finished result from. For an output addressed to a satellite, the result
-     * comes out of the machine that satellite faces and enters the network through the satellite; otherwise it comes
-     * from the machines the chassis faces, as always. The order and set accounting (see {@link #onResultExtracted})
-     * stays in the crafter either way.
+     * Which machine the extraction loop pulls a finished result from. For an output addressed to a satellite, the
+     * result comes out of the machine that satellite faces and enters the network through the satellite; otherwise it
+     * comes from the machines the chassis faces, as always. The order and set accounting (see
+     * {@link #onResultExtracted}) stays in the crafter either way.
      */
     @Override
     protected List<AdjacentTile> resultSourcesFor(LogisticsItemOrder order, List<AdjacentTile> faced) {
@@ -1256,7 +1262,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /** The Smart Satellite whose id an output is addressed to, or null if it isn't placed and reachable yet. */
     private PipeSmartSatellite smartSatelliteForId(int id) {
         for (PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
-            if (satellite.satelliteId == id && !satellite.stillNeedReplace() && satellite.getRouter() != null
+            if (satellite.satelliteId == id && !satellite.stillNeedReplace()
+                    && satellite.getRouter() != null
                     && isReachable(satellite.getRouter())) {
                 return satellite;
             }
@@ -2126,9 +2133,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
         super.itemLost(item, info);
         int slot = ingredientSlot(info);
         if (slot >= 0) {
-            // The crafter re-requests lost items, so let the replacement through.
             inFlight[slot] = Math.max(0, inFlight[slot] - item.getStackSize());
-            allowance[slot] += item.getStackSize();
+            // The crafter re-requests lost items, so let the replacement through. Not for a cancelled job, which gets
+            // no replacement.
+            if (!CraftingJobs.currentIsCancelled()) {
+                allowance[slot] += item.getStackSize();
+            }
         }
     }
 
@@ -2301,7 +2311,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
 
         // The fluid twin of the loop above: pull the intermediates another crafter parked in a fluid buffer, for this
-        // set's fluid ingredients. A fluid's machine-room lives in the tank, so the "already here" term is what the tank
+        // set's fluid ingredients. A fluid's machine-room lives in the tank, so the "already here" term is what the
+        // tank
         // holds of it; there is no machine inventory to count. The pull is itself capped by the tank's room.
         for (int slot = 0; claimedMachine != null && !ModuleFluidCraftingBuffer.AllBuffers.isEmpty()
                 && slot < INGREDIENT_SLOTS; slot++) {
@@ -2375,9 +2386,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // so its raw materials are released the moment the order lands - before the fluid that gates them exists.
         //
         // A fluid's on-hand total is exactly where it lands:
-        //   - non-satellite: this module's own machine tank, plus what is in flight and parked in a fluid buffer;
-        //   - satellite-routed: the machine the slot's satellite pours into - a DIFFERENT machine from the one this
-        //     module faces - and a satellite never goes through a buffer, so the tank's contents are the whole total.
+        // - non-satellite: this module's own machine tank, plus what is in flight and parked in a fluid buffer;
+        // - satellite-routed: the machine the slot's satellite pours into - a DIFFERENT machine from the one this
+        // module faces - and a satellite never goes through a buffer, so the tank's contents are the whole total.
         // Only a Smart Satellite has a single machine to read; a normal fluid satellite serves several tanks, so an
         // unobservable slot is treated as ready (holding blind would only trip the safety valve) - the no-wait
         // behaviour that path always had.
@@ -2408,7 +2419,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // Satellite item slots: isGatedSlot excludes them (a satellite-delivered item never occupies this machine's
         // inputs and must not count against the room check), so the first loop skips them. They still need the
         // intermediate hold though - a satellite-delivered item that another crafter makes should keep this set's other
-        // raw materials waiting until it is actually in the satellite's machine. inFlight and the buffer are not tracked
+        // raw materials waiting until it is actually in the satellite's machine. inFlight and the buffer are not
+        // tracked
         // for satellite slots (both are gated on isGatedSlot), so the machine's inventory is the whole on-hand total.
         // Hold check only: it decides when to release the set and never adds the slot to the room count.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
@@ -2437,9 +2449,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * How many of this item are already in the machine a satellite-routed item slot delivers into, or -1 when the slot
      * can't be observed that way: it names no satellite, it names a normal item satellite (no single machine to read),
-     * or the Smart Satellite's machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather than
-     * hold blind. Satellite item slots are not tracked in inFlight or the buffer (both are gated on isGatedSlot), so the
-     * machine's inventory is the whole on-hand total.
+     * or the Smart Satellite's machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather
+     * than hold blind. Satellite item slots are not tracked in inFlight or the buffer (both are gated on isGatedSlot),
+     * so the machine's inventory is the whole on-hand total.
      */
     private int itemsInSatelliteMachine(int slot, ItemIdentifier item) {
         if (advancedSatelliteIdArray[slot] == 0 || item == null) {
