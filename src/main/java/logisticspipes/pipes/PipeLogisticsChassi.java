@@ -83,6 +83,7 @@ import logisticspipes.textures.Textures;
 import logisticspipes.textures.Textures.TextureType;
 import logisticspipes.ticks.HudUpdateTick;
 import logisticspipes.utils.ISimpleInventoryEventHandler;
+import logisticspipes.utils.PipeLabel;
 import logisticspipes.utils.PlayerCollectionList;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
@@ -102,6 +103,9 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
     private boolean init = false;
 
     private boolean convertFromMeta = false;
+
+    /** Name and tags from the Label Upgrade; kept while the upgrade is out, but only used while it is in. */
+    private PipeLabel label = PipeLabel.EMPTY;
 
     // HUD
     public final LinkedList<ItemIdentifierStack> displayList = new LinkedList<>();
@@ -248,6 +252,8 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
             for (int i = 0; i < getChassiSize(); i++) {
                 _upgradeManagers[i].readFromNBT(nbttagcompound, Integer.toString(i));
             }
+            label = nbttagcompound.hasKey("lpLabel") ? PipeLabel.readFromNBT(nbttagcompound.getCompoundTag("lpLabel"))
+                    : PipeLabel.EMPTY;
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -265,6 +271,23 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         for (int i = 0; i < getChassiSize(); i++) {
             _upgradeManagers[i].writeToNBT(nbttagcompound, Integer.toString(i));
         }
+        if (!label.isEmpty()) {
+            NBTTagCompound labelTag = new NBTTagCompound();
+            label.writeToNBT(labelTag);
+            nbttagcompound.setTag("lpLabel", labelTag);
+        }
+    }
+
+    public PipeLabel getLabel() {
+        return label;
+    }
+
+    public void setLabel(PipeLabel label) {
+        this.label = label == null ? PipeLabel.EMPTY : label;
+    }
+
+    public boolean hasLabelUpgrade() {
+        return getOriginalUpgradeManager().hasLabelUpgrade();
     }
 
     @Override

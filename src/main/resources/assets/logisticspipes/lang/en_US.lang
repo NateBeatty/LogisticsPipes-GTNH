@@ -324,6 +324,7 @@ item.OpaqueUpgrade=Opaque Upgrade
 item.CraftingCleanupUpgrade=Crafting Cleanup Upgrade
 item.LogicControllerUpgrade=Logic Controller Upgrade
 item.UpgradeModuleUpgrade=Upgrade Module Upgrade
+item.LabelUpgrade=Label Upgrade
 
 #Upgrade info
 
@@ -586,6 +587,7 @@ gui.networkstatistics.amount=Track amount
 gui.networkstatistics.crafting=Items being crafted
 gui.networkstatistics.gettasks=Acquire tasks
 gui.networkstatistics.jobs=Crafting requests
+gui.networkstatistics.crafters=Labeled crafters
 gui.networkstatistics.add.alreadytracked=This item type is already tracked
 gui.networkstatistics.ItemDisplay=Page %s / %s
 

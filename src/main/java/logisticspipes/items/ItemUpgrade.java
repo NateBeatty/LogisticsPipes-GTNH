@@ -27,6 +27,7 @@ import logisticspipes.pipes.upgrades.CraftingMonitoringUpgrade;
 import logisticspipes.pipes.upgrades.FluidCraftingUpgrade;
 import logisticspipes.pipes.upgrades.FuzzyUpgrade;
 import logisticspipes.pipes.upgrades.IPipeUpgrade;
+import logisticspipes.pipes.upgrades.LabelUpgrade;
 import logisticspipes.pipes.upgrades.LogicControllerUpgrade;
 import logisticspipes.pipes.upgrades.OpaqueUpgrade;
 import logisticspipes.pipes.upgrades.PatternUpgrade;
@@ -96,6 +97,7 @@ public class ItemUpgrade extends LogisticsItem {
     public static final int OPAQUE_UPGRADE = 42;
     public static final int LOGIC_CONTROLLER_UPGRADE = 43;
     public static final int UPGRADE_MODULE_UPGRADE = 44;
+    public static final int LABEL_UPGRADE = 45;
 
     // Values
     public static final int MAX_LIQUID_CRAFTER = 3;
@@ -181,6 +183,7 @@ public class ItemUpgrade extends LogisticsItem {
             registerUpgrade(ItemUpgrade.LOGIC_CONTROLLER_UPGRADE, LogicControllerUpgrade.class, 30);
         }
         registerUpgrade(ItemUpgrade.UPGRADE_MODULE_UPGRADE, UpgradeModuleUpgrade.class, 31);
+        registerUpgrade(ItemUpgrade.LABEL_UPGRADE, LabelUpgrade.class, 32);
     }
 
     public void registerUpgrade(int id, Class<? extends IPipeUpgrade> moduleClass, int textureId) {
@@ -264,7 +267,7 @@ public class ItemUpgrade extends LogisticsItem {
 
     @Override
     public void registerIcons(IIconRegister par1IIconRegister) {
-        icons = new IIcon[32];
+        icons = new IIcon[33];
         icons[0] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/SneakyUP");
         icons[1] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/SneakyDOWN");
         icons[2] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/SneakyNORTH");
@@ -300,6 +303,7 @@ public class ItemUpgrade extends LogisticsItem {
         icons[29] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/CraftingCleanup");
         icons[30] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/LogicController");
         icons[31] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/UpgradeModule");
+        icons[32] = par1IIconRegister.registerIcon("logisticspipes:itemUpgrade/Label");
     }
 
     @Override

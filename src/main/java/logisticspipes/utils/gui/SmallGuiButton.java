@@ -46,12 +46,15 @@ public class SmallGuiButton extends GuiButton {
         drawTexturedModalRect(xPosition, yPosition, 0, 46 + k * 20, width / 2, height / 2);
         drawTexturedModalRect(xPosition + width / 2, yPosition, 200 - width / 2, 46 + k * 20, width / 2, height / 2);
 
-        drawTexturedModalRect(xPosition, yPosition + height / 2, 0, 46 + 25 - height + k * 20, width / 2, height / 2);
+        // The bottom half comes from the bottom of the 20px button texture, so it ends on the button's lower border.
+        // This used to start at 25 - height, which only lined up for 10px buttons and cut the border off taller ones.
+        int bottomV = 46 + 20 - height / 2 + k * 20;
+        drawTexturedModalRect(xPosition, yPosition + height / 2, 0, bottomV, width / 2, height / 2);
         drawTexturedModalRect(
                 xPosition + width / 2,
                 yPosition + height / 2,
                 200 - width / 2,
-                46 + 25 - height + k * 20,
+                bottomV,
                 width / 2,
                 height / 2);
 

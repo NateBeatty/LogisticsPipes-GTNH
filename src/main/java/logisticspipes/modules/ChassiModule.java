@@ -12,7 +12,6 @@ import logisticspipes.interfaces.IPipeServiceProvider;
 import logisticspipes.interfaces.IWorldProvider;
 import logisticspipes.modules.abstractmodules.LogisticsGuiModule;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
-import logisticspipes.network.NewGuiHandler;
 import logisticspipes.network.abstractguis.ModuleCoordinatesGuiProvider;
 import logisticspipes.network.abstractguis.ModuleInHandGuiProvider;
 import logisticspipes.network.guis.pipe.ChassiGuiProvider;
@@ -192,8 +191,7 @@ public class ChassiModule extends LogisticsGuiModule {
 
     @Override
     protected ModuleCoordinatesGuiProvider getPipeGuiProvider() {
-        return NewGuiHandler.getGui(ChassiGuiProvider.class)
-                .setFlag(_parentPipe.getUpgradeManager().hasUpgradeModuleUpgrade());
+        return ChassiGuiProvider.forPipe(_parentPipe);
     }
 
     @Override

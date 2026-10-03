@@ -165,10 +165,10 @@ public class CrafterLocator {
     }
 
     /**
-     * The side the pipe points at, or else the first side with an inventory that isn't a pipe (a crafting pipe that
-     * was never pointed with a wrench).
+     * The side the pipe points at, or else the first side with an inventory that isn't a pipe (a crafting pipe that was
+     * never pointed with a wrench).
      */
-    private static ForgeDirection machineSide(CoreRoutedPipe pipe) {
+    public static ForgeDirection machineSide(CoreRoutedPipe pipe) {
         ForgeDirection dir = pipe.inventoryOrientation();
         if (dir != null && dir != ForgeDirection.UNKNOWN) {
             return dir;
@@ -184,7 +184,7 @@ public class CrafterLocator {
     }
 
     /** The block as its pick-block item, which names GregTech machines properly; null if it has no item. */
-    private static ItemStack machineStack(World world, int x, int y, int z, ForgeDirection dir) {
+    public static ItemStack machineStack(World world, int x, int y, int z, ForgeDirection dir) {
         Block block = world.getBlock(x, y, z);
         if (block == null || block.isAir(world, x, y, z)) {
             return null;

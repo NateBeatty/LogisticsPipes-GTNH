@@ -2,20 +2,26 @@ package logisticspipes.gui;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.GuiTextField;
 import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.init.Blocks;
 import net.minecraft.init.Items;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.ChatComponentText;
 
+import org.lwjgl.input.Keyboard;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
@@ -24,13 +30,17 @@ import logisticspipes.blocks.stats.LogisticsStatisticsTileEntity;
 import logisticspipes.blocks.stats.TrackingTask;
 import logisticspipes.gui.popup.GuiAddTracking;
 import logisticspipes.gui.popup.GuiConfirmPopup;
+import logisticspipes.gui.popup.GuiTagPicker;
 import logisticspipes.network.PacketHandler;
 import logisticspipes.network.packets.block.CancelCraftingJobPacket;
 import logisticspipes.network.packets.block.RemoveAmoundTask;
 import logisticspipes.network.packets.block.RequestAmountTaskSubGui;
 import logisticspipes.network.packets.block.RequestCraftingJobs;
+import logisticspipes.network.packets.block.RequestLabeledCrafters;
 import logisticspipes.network.packets.block.RequestRunningCraftingTasks;
 import logisticspipes.proxy.MainProxy;
+import logisticspipes.renderer.LocateHighlighter;
+import logisticspipes.request.LabeledCrafters;
 import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobInfo;
 import logisticspipes.routing.order.CraftingJobs;
@@ -48,7 +58,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
 
     private final String PREFIX = "gui.networkstatistics.";
 
-    private final int TAB_COUNT = 3;
+    private final int TAB_COUNT = 4;
     private int current_Tab;
 
     private final List<GuiButton> TAB_BUTTON_1 = new ArrayList<>();
@@ -114,6 +124,76 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     private final GuiButton[] jobCancelButtons = new GuiButton[JOB_ROWS];
     private GuiButton sortButton;
     private GuiButton detailCancelButton;
+
+    /* Fourth tab: chassis pipes with a Label Upgrade */
+
+    private static final int CRAFTERS_TAB = 3;
+    private static final int CRAFTER_ROWS = 7;
+    private static final int CRAFTER_ROW_HEIGHT = 20;
+    private static final int CRAFTERS_TOP = 56;
+    /** How often the crafter list is refreshed while the tab is open, in client ticks. */
+    private static final int CRAFTER_REFRESH_TICKS = 40;
+    /** Crafted items named in a row's tooltip before "+N more". */
+    private static final int TOOLTIP_OUTPUTS = 8;
+
+    /** A chassis as last reported, with the text its search matches against. */
+    private static final class CrafterRow {
+
+        final LabeledCrafters.Entry entry;
+        final String searchText;
+
+        CrafterRow(LabeledCrafters.Entry entry) {
+            this.entry = entry;
+            StringBuilder text = new StringBuilder(entry.label.getName()).append('\n').append(entry.machineName);
+            for (String tag : entry.label.getTags()) {
+                text.append('\n').append(tag);
+            }
+            for (ItemIdentifierStack output : entry.outputs) {
+                text.append('\n').append(output.getFriendlyName());
+            }
+            searchText = text.toString().toLowerCase(Locale.ROOT);
+        }
+
+        /** The label's name, else the machine's, else what it is. */
+        String title() {
+            if (!entry.label.getName().isEmpty()) {
+                return entry.label.getName();
+            }
+            return entry.machineName.isEmpty() ? "Unnamed chassis" : entry.machineName;
+        }
+    }
+
+    private List<CrafterRow> crafters = new ArrayList<>();
+    /** {@link #crafters} after the search and the toggles, in display order. */
+    private List<CrafterRow> visibleCrafters = new ArrayList<>();
+    private int crafterPage = 0;
+    private int crafterRefreshIn = 0;
+    private boolean freeOnly = false;
+    private boolean namedOnly = false;
+    private GuiTextField crafterSearch;
+    private GuiButton freeOnlyButton;
+    private GuiButton namedOnlyButton;
+    private final List<GuiButton> TAB_BUTTON_4 = new ArrayList<>();
+
+    /** The crafter list's search and toggles as a table was left. */
+    private static final class SavedCrafterSearch {
+
+        final String search;
+        final boolean freeOnly;
+        final boolean namedOnly;
+        final int page;
+
+        SavedCrafterSearch(String search, boolean freeOnly, boolean namedOnly, int page) {
+            this.search = search;
+            this.freeOnly = freeOnly;
+            this.namedOnly = namedOnly;
+            this.page = page;
+        }
+    }
+
+    /** Per table, by dimension and position; client-side only, so it lasts until the game is closed. */
+    private static final Map<String, SavedCrafterSearch> SAVED_SEARCHES = new HashMap<>();
+
     private final LogisticsStatisticsTileEntity tile;
 
     private ItemDisplay itemDisplay_1;
@@ -122,7 +202,8 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     private int move_left;
 
     public GuiStatistics(final LogisticsStatisticsTileEntity tile) {
-        // ItemDisplay lays out 20px slots from x = 2 and only wraps once a slot starts past its width, so the item areas
+        // ItemDisplay lays out 20px slots from x = 2 and only wraps once a slot starts past its width, so the item
+        // areas
         // (xSize - 20 wide) need a width that is a multiple of 20 for the last column to fit inside the box.
         super(260, 220, 0, 0);
         this.tile = tile;
@@ -164,6 +245,32 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             jobCancelButtons[i] = addButton(
                     new SmallGuiButton(20 + i, guiLeft + xSize - 22, guiTop + 45 + i * JOB_ROW_HEIGHT, 10, 10, "x"));
         }
+
+        TAB_BUTTON_4.clear();
+        // Full-size text, so these are wider and taller than the other small buttons.
+        freeOnlyButton = addButton(new SmallGuiButton(30, guiLeft + xSize - 150, guiTop + 24, 68, 12, ""));
+        namedOnlyButton = addButton(new SmallGuiButton(31, guiLeft + xSize - 78, guiTop + 24, 68, 12, ""));
+        TAB_BUTTON_4.add(freeOnlyButton);
+        TAB_BUTTON_4.add(namedOnlyButton);
+        TAB_BUTTON_4.add(addButton(new SmallGuiButton(32, guiLeft + xSize - 60, guiTop + 205, 10, 10, "<")));
+        TAB_BUTTON_4.add(addButton(new SmallGuiButton(33, guiLeft + xSize - 20, guiTop + 205, 10, 10, ">")));
+        TAB_BUTTON_4.add(addButton(new SmallGuiButton(34, guiLeft + xSize - 66, guiTop + 40, 38, 12, "Tags")));
+        TAB_BUTTON_4.add(addButton(new SmallGuiButton(35, guiLeft + xSize - 24, guiTop + 40, 14, 12, "x")));
+        String search = crafterSearch != null ? crafterSearch.getText() : "";
+        if (crafterSearch == null) {
+            // First open: pick up where this table's crafter list was left, until the game is closed.
+            SavedCrafterSearch saved = SAVED_SEARCHES.get(tableKey());
+            if (saved != null) {
+                search = saved.search;
+                freeOnly = saved.freeOnly;
+                namedOnly = saved.namedOnly;
+                crafterPage = saved.page;
+            }
+        }
+        updateToggleLabels();
+        crafterSearch = new GuiTextField(fontRendererObj, guiLeft + 11, guiTop + 40, xSize - 82, 12);
+        crafterSearch.setMaxStringLength(200);
+        crafterSearch.setText(search);
 
         if (itemDisplay_1 == null) {
             itemDisplay_1 = new ItemDisplay(
@@ -271,12 +378,297 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             if (index < rows.size() && rows.get(index).ended == null) {
                 confirmCancel(rows.get(index).info);
             }
+        } else if (p_146284_1_.id == 30) {
+            freeOnly = !freeOnly;
+            updateToggleLabels();
+            filterCrafters();
+        } else if (p_146284_1_.id == 31) {
+            namedOnly = !namedOnly;
+            updateToggleLabels();
+            filterCrafters();
+        } else if (p_146284_1_.id == 32 || p_146284_1_.id == 33) {
+            turnCrafterPage(p_146284_1_.id == 33 ? 1 : -1);
+        } else if (p_146284_1_.id == 34) {
+            setSubGui(new GuiTagPicker(networkTags(), this::isTagSearched, this::toggleTagSearch));
+        } else if (p_146284_1_.id == 35) {
+            crafterSearch.setText("");
+            freeOnly = false;
+            namedOnly = false;
+            crafterPage = 0;
+            updateToggleLabels();
+            filterCrafters();
         }
+    }
+
+    private String tableKey() {
+        int dimension = tile.getWorldObj() == null ? 0 : tile.getWorldObj().provider.dimensionId;
+        return dimension + ":" + tile.xCoord + ":" + tile.yCoord + ":" + tile.zCoord;
+    }
+
+    @Override
+    public void onGuiClosed() {
+        if (crafterSearch != null) {
+            SAVED_SEARCHES
+                    .put(tableKey(), new SavedCrafterSearch(crafterSearch.getText(), freeOnly, namedOnly, crafterPage));
+        }
+        super.onGuiClosed();
+    }
+
+    /** Every tag on the listed chassis with how many have it, merging case and spacing variants, A to Z. */
+    private List<GuiTagPicker.TagCount> networkTags() {
+        Map<String, String> shown = new HashMap<>();
+        Map<String, Integer> counts = new HashMap<>();
+        for (CrafterRow row : crafters) {
+            Set<String> onThisChassis = new HashSet<>();
+            for (String tag : row.entry.label.getTags()) {
+                String key = squashTag(tag);
+                if (onThisChassis.add(key)) {
+                    shown.putIfAbsent(key, tag);
+                    counts.merge(key, 1, Integer::sum);
+                }
+            }
+        }
+        List<GuiTagPicker.TagCount> tags = new ArrayList<>();
+        for (Map.Entry<String, String> e : shown.entrySet()) {
+            tags.add(new GuiTagPicker.TagCount(e.getValue(), counts.get(e.getKey())));
+        }
+        tags.sort(Comparator.comparing(t -> t.tag.toLowerCase(Locale.ROOT)));
+        return tags;
+    }
+
+    private static String squashTag(String tag) {
+        return tag.replace(" ", "").toLowerCase(Locale.ROOT);
+    }
+
+    /** Whether the search has this tag as a {@code #tag} word. */
+    private boolean isTagSearched(String tag) {
+        String wanted = squashTag(tag);
+        for (String word : crafterSearch.getText().trim().split("\\s+")) {
+            if (word.startsWith("#") && squashTag(word.substring(1)).equals(wanted)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Adds {@code #tag} to the search, or removes it if it is there; spaces are dropped, as the filter ignores them.
+     */
+    private void toggleTagSearch(String tag) {
+        String wanted = squashTag(tag);
+        List<String> kept = new ArrayList<>();
+        boolean removed = false;
+        for (String word : crafterSearch.getText().trim().split("\\s+")) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            if (word.startsWith("#") && squashTag(word.substring(1)).equals(wanted)) {
+                removed = true;
+            } else {
+                kept.add(word);
+            }
+        }
+        if (!removed) {
+            kept.add("#" + tag.replace(" ", ""));
+        }
+        crafterSearch.setText(String.join(" ", kept));
+        crafterPage = 0;
+        filterCrafters();
+    }
+
+    /* Labeled crafters tab */
+
+    private void updateToggleLabels() {
+        freeOnlyButton.displayString = freeOnly ? "Free only" : "Any slots";
+        namedOnlyButton.displayString = namedOnly ? "Named only" : "Any name";
+    }
+
+    public void handleCrafterList(List<LabeledCrafters.Entry> entries) {
+        List<CrafterRow> rows = new ArrayList<>(entries.size());
+        for (LabeledCrafters.Entry entry : entries) {
+            rows.add(new CrafterRow(entry));
+        }
+        crafters = rows;
+        filterCrafters();
+    }
+
+    /**
+     * Applies the search and toggles. Search words must all match somewhere in the name, tags, machine or crafted
+     * items; a word starting with # must be one of the tags exactly (ignoring case and spaces).
+     */
+    private void filterCrafters() {
+        String[] words = crafterSearch == null ? new String[0]
+                : crafterSearch.getText().trim().toLowerCase(Locale.ROOT).split("\\s+");
+        List<CrafterRow> visible = new ArrayList<>();
+        for (CrafterRow row : crafters) {
+            if (freeOnly && row.entry.freeSlots == 0) {
+                continue;
+            }
+            if (namedOnly && row.entry.label.getName().isEmpty()) {
+                continue;
+            }
+            if (matchesSearch(row, words)) {
+                visible.add(row);
+            }
+        }
+        // Named ones first, then alphabetically, then by position so the order doesn't jump between refreshes.
+        visible.sort(
+                Comparator.comparing((CrafterRow r) -> r.entry.label.getName().isEmpty())
+                        .thenComparing(r -> r.title().toLowerCase(Locale.ROOT)).thenComparingInt(r -> r.entry.dimension)
+                        .thenComparingInt(r -> r.entry.x).thenComparingInt(r -> r.entry.y)
+                        .thenComparingInt(r -> r.entry.z));
+        visibleCrafters = visible;
+    }
+
+    private static boolean matchesSearch(CrafterRow row, String[] words) {
+        for (String word : words) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            if (word.startsWith("#") && word.length() > 1) {
+                if (!row.entry.label.hasTag(word.substring(1))) {
+                    return false;
+                }
+            } else if (!row.searchText.contains(word)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void turnCrafterPage(int by) {
+        int pages = Math.max(1, (visibleCrafters.size() + CRAFTER_ROWS - 1) / CRAFTER_ROWS);
+        crafterPage = Math.floorMod(crafterPage + by, pages);
+    }
+
+    /** The visible crafter under the mouse, or null. */
+    private CrafterRow crafterRowAt(int mouseX, int mouseY) {
+        int x = guiLeft + 10;
+        int top = guiTop + CRAFTERS_TOP;
+        if (mouseX < x || mouseX >= x + xSize - 20
+                || mouseY < top
+                || mouseY >= top + CRAFTER_ROWS * CRAFTER_ROW_HEIGHT) {
+            return null;
+        }
+        int index = crafterPage * CRAFTER_ROWS + (mouseY - top) / CRAFTER_ROW_HEIGHT;
+        return index < visibleCrafters.size() ? visibleCrafters.get(index) : null;
+    }
+
+    /** Outlines the chassis and its machine in the world, the same way the request table's Locate button does. */
+    private void locate(CrafterRow row) {
+        LabeledCrafters.Entry e = row.entry;
+        LocateHighlighter.INSTANCE.clear();
+        LocateHighlighter.INSTANCE.add(e.x, e.y, e.z, LocateHighlighter.PIPE_COLOR);
+        if (e.hasMachine) {
+            LocateHighlighter.INSTANCE.add(e.machineX, e.machineY, e.machineZ, LocateHighlighter.MACHINE_COLOR);
+        }
+        LocateHighlighter.INSTANCE.start(e.dimension);
+        String where = e.x + ", " + e.y + ", " + e.z;
+        if (mc.theWorld != null && mc.theWorld.provider.dimensionId != e.dimension) {
+            where += " in dimension " + e.dimension;
+        }
+        mc.thePlayer.addChatMessage(new ChatComponentText("Highlighting " + row.title() + " at " + where + "."));
+    }
+
+    private void renderStack(ItemStack stack, int x, int y) {
+        if (stack == null) {
+            return;
+        }
+        GL11.glEnable(GL12.GL_RESCALE_NORMAL);
+        OpenGlHelper.setLightmapTextureCoords(OpenGlHelper.lightmapTexUnit, 240, 240);
+        GL11.glEnable(GL11.GL_LIGHTING);
+        GL11.glEnable(GL11.GL_DEPTH_TEST);
+        RenderHelper.enableGUIStandardItemLighting();
+        GuiScreen.itemRender.renderItemAndEffectIntoGUI(fontRendererObj, getMC().renderEngine, stack, x, y);
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        GuiScreen.itemRender.zLevel = 0.0F;
+    }
+
+    private void drawCraftersTab(int mouseX, int mouseY) {
+        crafterSearch.drawTextBox();
+        int x = guiLeft + 10;
+        int top = guiTop + CRAFTERS_TOP;
+        int width = xSize - 20;
+        if (visibleCrafters.isEmpty()) {
+            String empty = crafters.isEmpty() ? "No chassis with a Label Upgrade on this network." : "Nothing matches.";
+            fontRendererObj.drawString(empty, xCenter - fontRendererObj.getStringWidth(empty) / 2, top + 20, 0x404040);
+            return;
+        }
+        int pages = Math.max(1, (visibleCrafters.size() + CRAFTER_ROWS - 1) / CRAFTER_ROWS);
+        crafterPage = Math.min(crafterPage, pages - 1);
+        CrafterRow hovered = hasSubGui() ? null : crafterRowAt(mouseX, mouseY);
+        for (int i = 0; i < CRAFTER_ROWS; i++) {
+            int index = crafterPage * CRAFTER_ROWS + i;
+            if (index >= visibleCrafters.size()) {
+                break;
+            }
+            CrafterRow row = visibleCrafters.get(index);
+            LabeledCrafters.Entry e = row.entry;
+            int y = top + i * CRAFTER_ROW_HEIGHT;
+            if (row == hovered) {
+                drawRect(x, y, x + width, y + CRAFTER_ROW_HEIGHT - 1, Color.LIGHTER_GREY);
+            }
+            renderStack(e.icon, x + 1, y + 2);
+
+            String slots = e.freeSlots > 0 ? e.freeSlots + "/" + e.totalSlots + " free" : "full";
+            int slotsWidth = fontRendererObj.getStringWidth(slots);
+            fontRendererObj.drawString(slots, x + width - 2 - slotsWidth, y + 1, e.freeSlots > 0 ? 0x207020 : 0x909090);
+            int titleColor = e.label.getName().isEmpty() ? 0x808080 : 0x404040;
+            fontRendererObj.drawString(
+                    StringUtils.getWithMaxWidth(row.title(), width - 28 - slotsWidth, fontRendererObj),
+                    x + 20,
+                    y + 1,
+                    titleColor);
+
+            String position = e.x + ", " + e.y + ", " + e.z;
+            int positionWidth = fontRendererObj.getStringWidth(position);
+            fontRendererObj.drawString(position, x + width - 2 - positionWidth, y + 10, 0x909090);
+            StringBuilder tags = new StringBuilder();
+            for (String tag : e.label.getTags()) {
+                tags.append(tags.length() == 0 ? "#" : " #").append(tag);
+            }
+            fontRendererObj.drawString(
+                    StringUtils.getWithMaxWidth(tags.toString(), width - 28 - positionWidth, fontRendererObj),
+                    x + 20,
+                    y + 10,
+                    0x3050A0);
+        }
+        drawPageNumber(crafterPage, pages);
+    }
+
+    /** Name, machine, position and what it crafts; drawn in the foreground layer, so relative to the GUI. */
+    private void drawCrafterTooltip(int mouseX, int mouseY) {
+        CrafterRow row = hasSubGui() ? null : crafterRowAt(mouseX, mouseY);
+        if (row == null) {
+            return;
+        }
+        LabeledCrafters.Entry e = row.entry;
+        List<String> lines = new ArrayList<>();
+        lines.add(row.title());
+        if (!e.machineName.isEmpty() && !e.machineName.equals(row.title())) {
+            lines.add("§7" + e.machineName);
+        }
+        lines.add("§7At " + e.x + ", " + e.y + ", " + e.z + " (dim " + e.dimension + ")");
+        if (e.outputs.isEmpty()) {
+            lines.add("§7Crafts nothing yet");
+        } else {
+            lines.add("§7Crafts:");
+            for (int i = 0; i < e.outputs.size() && i < TOOLTIP_OUTPUTS; i++) {
+                lines.add("§7 " + e.outputs.get(i).getFriendlyName());
+            }
+            if (e.outputs.size() > TOOLTIP_OUTPUTS) {
+                lines.add("§7 +" + (e.outputs.size() - TOOLTIP_OUTPUTS) + " more");
+            }
+        }
+        lines.add("§eClick to locate");
+        func_146283_a(lines, mouseX - guiLeft, mouseY - guiTop);
     }
 
     /* Crafting requests tab */
 
     private static ItemStack requestsTabIcon;
+    private static final ItemStack CRAFTERS_TAB_ICON = new ItemStack(Items.name_tag);
 
     /**
      * IC2's electronic circuit when IC2 is installed, redstone dust otherwise. Looked up by registry name, so there is
@@ -297,6 +689,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     @Override
     public void updateScreen() {
         super.updateScreen();
+        if (current_Tab == CRAFTERS_TAB) {
+            crafterSearch.updateCursorCounter();
+            if (--crafterRefreshIn <= 0) {
+                crafterRefreshIn = CRAFTER_REFRESH_TICKS;
+                MainProxy.sendPacketToServer(PacketHandler.getPacket(RequestLabeledCrafters.class).setTilePos(tile));
+            }
+            return;
+        }
         if (current_Tab != JOBS_TAB) {
             return;
         }
@@ -660,6 +1060,13 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                 requestsTabIcon(),
                 guiLeft + 56,
                 guiTop + 3);
+        // Fourth Tab
+        GuiScreen.itemRender.renderItemAndEffectIntoGUI(
+                fontRendererObj,
+                getMC().renderEngine,
+                CRAFTERS_TAB_ICON,
+                guiLeft + 81,
+                guiTop + 3);
         GL11.glDisable(GL11.GL_LIGHTING);
         GL11.glDisable(GL11.GL_DEPTH_TEST);
         GuiScreen.itemRender.zLevel = 0.0F;
@@ -828,6 +1235,8 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             itemDisplay_2.renderPageNumber(right - 50, guiTop + 66);
         } else if (current_Tab == JOBS_TAB) {
             drawJobsTab(mouse_x, mouse_y);
+        } else if (current_Tab == CRAFTERS_TAB) {
+            drawCraftersTab(mouse_x, mouse_y);
         }
 
         super.drawGuiContainerBackgroundLayer(f, mouse_x, mouse_y);
@@ -859,6 +1268,21 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             } else {
                 super.keyTyped(c, i);
             }
+        } else if (current_Tab == CRAFTERS_TAB) {
+            if (crafterSearch.isFocused() && i != Keyboard.KEY_ESCAPE) {
+                if (i == Keyboard.KEY_RETURN || i == Keyboard.KEY_NUMPADENTER) {
+                    crafterSearch.setFocused(false);
+                } else if (crafterSearch.textboxKeyTyped(c, i)) {
+                    crafterPage = 0;
+                    filterCrafters();
+                }
+            } else if (i == 201) { // PgUp
+                turnCrafterPage(-1);
+            } else if (i == 209) { // PgDn
+                turnCrafterPage(1);
+            } else {
+                super.keyTyped(c, i);
+            }
         } else {
             super.keyTyped(c, i);
         }
@@ -871,6 +1295,9 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             int tab = Math.max(0, Math.min(par1 / 25, TAB_COUNT - 1));
             if (tab == JOBS_TAB && current_Tab != JOBS_TAB) {
                 refreshIn = 0; // fetch straight away on opening the tab
+            }
+            if (tab == CRAFTERS_TAB && current_Tab != CRAFTERS_TAB) {
+                crafterRefreshIn = 0;
             }
             current_Tab = tab;
         } else {
@@ -886,6 +1313,12 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             } else if (current_Tab == JOBS_TAB && par3 == 0 && isOverDetailHeader(par1, par2)) {
                 // Clicking the request again collapses it, the same as Back.
                 showJobList();
+            } else if (current_Tab == CRAFTERS_TAB) {
+                crafterSearch.mouseClicked(par1, par2, par3);
+                CrafterRow row = par3 == 0 && !hasSubGui() ? crafterRowAt(par1, par2) : null;
+                if (row != null) {
+                    locate(row);
+                }
             }
             super.mouseClicked(par1, par2, par3);
         }
@@ -924,6 +1357,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             String title = detailJobId == -1 ? StringUtils.translate(PREFIX + "jobs")
                     : "Request #" + detailJobId + " is waiting on:";
             mc.fontRenderer.drawString(title, 10, 28, Color.getValue(Color.DARKER_GREY), false);
+        } else if (current_Tab == CRAFTERS_TAB) {
+            mc.fontRenderer.drawString(
+                    StringUtils.translate(PREFIX + "crafters"),
+                    10,
+                    28,
+                    Color.getValue(Color.DARKER_GREY),
+                    false);
+            drawCrafterTooltip(par1, par2);
         }
     }
 
@@ -946,6 +1387,9 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         }
         if (detailCancelButton == null) {
             return; // not initialised yet
+        }
+        for (GuiButton button : TAB_BUTTON_4) {
+            button.visible = current_Tab == CRAFTERS_TAB;
         }
         boolean jobsTab = current_Tab == JOBS_TAB;
         boolean listView = jobsTab && detailJobId == -1;
