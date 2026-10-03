@@ -460,8 +460,8 @@ public class ClientProxy implements IProxy {
                         .thenComparingDouble(l -> player.getDistanceSq(l.x + 0.5, l.y + 0.5, l.z + 0.5)));
         player.addChatComponentMessage(
                 new ChatComponentText(
-                        ChatColor.GOLD
-                                + StatCollector.translateToLocalFormatted("lp.locate.header", itemName, locations.size())));
+                        ChatColor.GOLD + StatCollector
+                                .translateToLocalFormatted("lp.locate.header", itemName, locations.size())));
         for (int i = 0; i < locations.size() && i < LOCATE_CHAT_LINES; i++) {
             CrafterLocator.Location l = locations.get(i);
             String machine = l.machine != null ? l.machine.getDisplayName()
@@ -469,10 +469,22 @@ public class ClientProxy implements IProxy {
             String kind = l.chassisSlot >= 0
                     ? StatCollector.translateToLocalFormatted("lp.locate.slot", l.chassisSlot + 1)
                     : StatCollector.translateToLocal("lp.locate.pipe");
-            String line = ChatColor.AQUA + " (" + l.x + ", " + l.y + ", " + l.z + ")"
-                    + ChatColor.GRAY + " Dim " + l.dimension
-                    + ChatColor.WHITE + " - " + machine
-                    + ChatColor.GRAY + " - " + kind;
+            String line = ChatColor.AQUA + " ("
+                    + l.x
+                    + ", "
+                    + l.y
+                    + ", "
+                    + l.z
+                    + ")"
+                    + ChatColor.GRAY
+                    + " Dim "
+                    + l.dimension
+                    + ChatColor.WHITE
+                    + " - "
+                    + machine
+                    + ChatColor.GRAY
+                    + " - "
+                    + kind;
             if (l.dimension != dimension) {
                 line += " (" + StatCollector.translateToLocal("lp.locate.otherdim") + ")";
             }
@@ -481,8 +493,9 @@ public class ClientProxy implements IProxy {
         if (locations.size() > LOCATE_CHAT_LINES) {
             player.addChatComponentMessage(
                     new ChatComponentText(
-                            ChatColor.GRAY + StatCollector
-                                    .translateToLocalFormatted("lp.locate.more", locations.size() - LOCATE_CHAT_LINES)));
+                            ChatColor.GRAY + StatCollector.translateToLocalFormatted(
+                                    "lp.locate.more",
+                                    locations.size() - LOCATE_CHAT_LINES)));
         }
 
         LocateHighlighter highlighter = LocateHighlighter.INSTANCE;

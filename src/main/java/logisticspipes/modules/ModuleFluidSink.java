@@ -39,11 +39,11 @@ import logisticspipes.utils.string.StringUtils;
  * <b>default-path</b> flag that makes it a last-resort endpoint for <em>any</em> fluid.
  *
  * <p>
- * A fluid reaches this module the way every fluid does in LP: as an ordinary routed item holding a fluid container.
- * The fluid router only targets this chassis because the chassis forwards its room queries here
- * ({@link IFluidSinkModule}); the receiving end is {@link IFluidContainerReceiver}, already wired into the chassis the
- * same way {@link ModuleFluidCraftingBuffer} proved it. The module pours an arriving container into the tank the chassis
- * faces and sends whatever doesn't fit back into the network.
+ * A fluid reaches this module the way every fluid does in LP: as an ordinary routed item holding a fluid container. The
+ * fluid router only targets this chassis because the chassis forwards its room queries here ({@link IFluidSinkModule});
+ * the receiving end is {@link IFluidContainerReceiver}, already wired into the chassis the same way
+ * {@link ModuleFluidCraftingBuffer} proved it. The module pours an arriving container into the tank the chassis faces
+ * and sends whatever doesn't fit back into the network.
  * </p>
  *
  * <p>

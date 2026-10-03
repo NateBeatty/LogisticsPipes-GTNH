@@ -320,8 +320,9 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     /**
-     * An ingredient to ask for again, and the job it was for when that is known (a failed delivery says so, an item
-     * lost in transit doesn't). The re-request joins that job, and is dropped if the job was cancelled meanwhile.
+     * An ingredient to ask for again, and the job it was for when that is known (a failed delivery says so, and so does
+     * an item lost in transit or bounced off a full machine if an order sent it). The re-request joins that job, and is
+     * dropped if the job was cancelled meanwhile.
      */
     protected static final class LostItem {
 
@@ -1583,12 +1584,12 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     /**
-     * Like {@code _service.sendStack(stack, -1, ItemSendMode.Normal, info)}, but through {@link AdjacentTile#sender} when
-     * set. The sender's own {@code sendStack} can't be used: it sends out of its pointed orientation, which a satellite
-     * doesn't have.
+     * Like {@code _service.sendStack(stack, -1, ItemSendMode.Normal, info)}, but through {@link AdjacentTile#sender}
+     * when set. The sender's own {@code sendStack} can't be used: it sends out of its pointed orientation, which a
+     * satellite doesn't have.
      * <p>
-     * The sender is jammed as a destination: a satellite sinks into the machine it faces, and from the satellite that is
-     * the nearest sink there is, so the result would go straight back where it came from.
+     * The sender is jammed as a destination: a satellite sinks into the machine it faces, and from the satellite that
+     * is the nearest sink there is, so the result would go straight back where it came from.
      */
     private void sendUnrouted(AdjacentTile source, ItemStack stack, IAdditionalTargetInformation info) {
         if (source.sender == null) {
@@ -1604,8 +1605,8 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     /**
-     * The machine(s) a finished result for {@code order} is pulled from. Defaults to the machines the chassis faces (see
-     * {@link #locateCrafters()}); a crafter whose outputs are addressed to a satellite overrides this to pull a
+     * The machine(s) a finished result for {@code order} is pulled from. Defaults to the machines the chassis faces
+     * (see {@link #locateCrafters()}); a crafter whose outputs are addressed to a satellite overrides this to pull a
      * particular output from the machine that satellite faces. The set accounting stays in the crafter either way.
      */
     protected List<AdjacentTile> resultSourcesFor(LogisticsItemOrder order, List<AdjacentTile> faced) {

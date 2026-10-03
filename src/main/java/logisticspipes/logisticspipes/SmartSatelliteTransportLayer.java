@@ -6,9 +6,9 @@ import logisticspipes.routing.IRouter;
 import logisticspipes.utils.item.ItemIdentifier;
 
 /**
- * Like the default {@link PipeTransportLayer} (which always accepts items so passive deliveries can reach the
- * machine), except it declines <em>active</em> deliveries that lost their slot information when the owning Smart
- * Crafter would reject them.
+ * Like the default {@link PipeTransportLayer} (which always accepts items so passive deliveries can reach the machine),
+ * except it declines <em>active</em> deliveries that lost their slot information when the owning Smart Crafter would
+ * reject them.
  * <p>
  * This mirrors {@link ChassiTransportLayer#acceptsActiveItem}: a normal order to a slot always carries that
  * information; only items saved mid-pipe and loaded again (server restart, chunk reload) lose it. Their orders are

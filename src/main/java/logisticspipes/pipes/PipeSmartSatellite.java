@@ -14,8 +14,8 @@ import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.IFluidHandler;
 
 import logisticspipes.LogisticsPipes;
-import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
+import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequireReliableFluidTransport;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
@@ -48,10 +48,10 @@ import logisticspipes.utils.tuples.LPPosition;
 import logisticspipes.utils.tuples.Pair;
 
 /**
- * One pipe that carries both items and fluids for a Smart Crafter, addressed by a single numeric
- * {@link #satelliteId}. It is a fluid-type pipe ({@link FluidRoutedPipe}) so it can drain its own tank and fill the
- * facing machine's tank; plain items routed to it are not handled here (they fall through to the machine's inventory
- * in {@code PipeTransportLogistics#handleTileReachedServer}).
+ * One pipe that carries both items and fluids for a Smart Crafter, addressed by a single numeric {@link #satelliteId}.
+ * It is a fluid-type pipe ({@link FluidRoutedPipe}) so it can drain its own tank and fill the facing machine's tank;
+ * plain items routed to it are not handled here (they fall through to the machine's inventory in
+ * {@code PipeTransportLogistics#handleTileReachedServer}).
  * <p>
  * The Smart Crafter stores this pipe's id in one of its input/output slots; the pipe finds that crafter by scanning
  * {@link ModuleSmartCrafter#AllCrafters} for a crafter whose slot array holds the id. That is NBT-derived, so it
@@ -60,8 +60,10 @@ import logisticspipes.utils.tuples.Pair;
 public class PipeSmartSatellite extends FluidRoutedPipe
         implements IRequestFluid, IRequireReliableTransport, IRequireReliableFluidTransport, IGatedItemSink {
 
-    /** Loaded Smart Satellites, keyed only by {@link #satelliteId}. Kept separate from the normal item/fluid
-     * satellite registries so a normal crafter's lookups are untouched. */
+    /**
+     * Loaded Smart Satellites, keyed only by {@link #satelliteId}. Kept separate from the normal item/fluid satellite
+     * registries so a normal crafter's lookups are untouched.
+     */
     public static final Set<PipeSmartSatellite> AllSatellites = Collections.newSetFromMap(new WeakHashMap<>());
 
     // called only on server shutdown
@@ -185,8 +187,8 @@ public class PipeSmartSatellite extends FluidRoutedPipe
                     .setPosZ(getZ());
             MainProxy.sendPacketToServer(packet);
         } else {
-            final ModernPacket packet = PacketHandler.getPacket(SatPipeSetID.class).setSatID(satelliteId).setPosX(getX())
-                    .setPosY(getY()).setPosZ(getZ());
+            final ModernPacket packet = PacketHandler.getPacket(SatPipeSetID.class).setSatID(satelliteId)
+                    .setPosX(getX()).setPosY(getY()).setPosZ(getZ());
             MainProxy.sendPacketToPlayer(packet, player);
         }
     }
@@ -199,8 +201,8 @@ public class PipeSmartSatellite extends FluidRoutedPipe
                     .setPosZ(getZ());
             MainProxy.sendPacketToServer(packet);
         } else {
-            final ModernPacket packet = PacketHandler.getPacket(SatPipeSetID.class).setSatID(satelliteId).setPosX(getX())
-                    .setPosY(getY()).setPosZ(getZ());
+            final ModernPacket packet = PacketHandler.getPacket(SatPipeSetID.class).setSatID(satelliteId)
+                    .setPosX(getX()).setPosY(getY()).setPosZ(getZ());
             MainProxy.sendPacketToPlayer(packet, player);
         }
     }
@@ -220,8 +222,13 @@ public class PipeSmartSatellite extends FluidRoutedPipe
             if (pushing != null) {
                 entityplayer.addChatComponentMessage(
                         new ChatComponentText(
-                                "Smart Satellite " + satelliteId + ": the output at " + pushing.xCoord + ", "
-                                        + pushing.yCoord + ", " + pushing.zCoord
+                                "Smart Satellite " + satelliteId
+                                        + ": the output at "
+                                        + pushing.xCoord
+                                        + ", "
+                                        + pushing.yCoord
+                                        + ", "
+                                        + pushing.zCoord
                                         + " pushes its contents out by itself, so results will bypass the crafter."
                                         + " Soft-mallet it to Machine Processing: Disabled."));
             }
@@ -386,8 +393,8 @@ public class PipeSmartSatellite extends FluidRoutedPipe
     /* -- Machine access (used by the owning crafter for room checks, claims, and outputs) -- */
 
     /**
-     * @return the direction from this satellite to the machine it faces — a connected neighbour that is not another pipe
-     *         and exposes an inventory or a fluid handler — or null if there is none.
+     * @return the direction from this satellite to the machine it faces — a connected neighbour that is not another
+     *         pipe and exposes an inventory or a fluid handler — or null if there is none.
      */
     public ForgeDirection getMachineFacing() {
         for (ForgeDirection dir : ForgeDirection.VALID_DIRECTIONS) {
@@ -408,16 +415,16 @@ public class PipeSmartSatellite extends FluidRoutedPipe
     }
 
     /**
-     * @return a neighbouring machine output (a GregTech output bus or hatch left on) that empties itself into the block in
-     *         front of it, or null if there is none. Results pushed out that way never reach the crafter.
+     * @return a neighbouring machine output (a GregTech output bus or hatch left on) that empties itself into the block
+     *         in front of it, or null if there is none. Results pushed out that way never reach the crafter.
      */
     public TileEntity findPushingOutput() {
         return OutputPushUtil.findPushingNeighbour(getWorld(), getX(), getY(), getZ());
     }
 
     /**
-     * @return the machine tile this satellite faces — the neighbour at {@link #getMachineFacing()} — or null if there is
-     *         none.
+     * @return the machine tile this satellite faces — the neighbour at {@link #getMachineFacing()} — or null if there
+     *         is none.
      */
     public TileEntity getMachineTile() {
         ForgeDirection dir = getMachineFacing();

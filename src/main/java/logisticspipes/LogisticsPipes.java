@@ -691,10 +691,7 @@ public class LogisticsPipes {
                 PipeFluidSatellite.class,
                 "Logistics Fluid Satellite Pipe",
                 side);
-        LogisticsPipes.LogisticsSmartSatellitePipe = createPipe(
-                PipeSmartSatellite.class,
-                "Smart Satellite Pipe",
-                side);
+        LogisticsPipes.LogisticsSmartSatellitePipe = createPipe(PipeSmartSatellite.class, "Smart Satellite Pipe", side);
         LogisticsPipes.LogisticsFluidSupplierPipeMk2 = createPipe(
                 PipeFluidSupplierMk2.class,
                 "Logistics Fluid Supplier Pipe Mk2",

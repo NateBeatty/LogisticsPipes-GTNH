@@ -62,8 +62,8 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         // rather than a failed order. Anything that is not a Smart Crafter has no fluid gate and takes the full amount.
         IRequestFluid consumer = order.getDestination();
         if (consumer instanceof ModuleSmartCrafter) {
-            amountToSend = Math.min(amountToSend,
-                    ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(order.getFluid()));
+            amountToSend = Math
+                    .min(amountToSend, ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(order.getFluid()));
         }
         for (Pair<TileEntity, ForgeDirection> pair : getAdjacentTanks(false)) {
             if (amountToSend <= 0) {

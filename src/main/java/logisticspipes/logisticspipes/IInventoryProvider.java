@@ -36,6 +36,8 @@ public interface IInventoryProvider extends ISendRoutedItem {
 
     int countOnRoute(ItemIdentifier item);
 
-    /** Total amount of a given fluid already on the way into this pipe, summed across the routed containers holding it. */
+    /**
+     * Total amount of a given fluid already on the way into this pipe, summed across the routed containers holding it.
+     */
     int countFluidOnRoute(FluidIdentifier ident);
 }

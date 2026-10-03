@@ -20,11 +20,9 @@ public interface IFluidSinkModule {
     /**
      * How much of {@code stack} this module can currently accept.
      *
-     * @param stack
-     *            the fluid being routed (never null)
-     * @param defaultPath
-     *            {@code true} queries the module as a default-path (last resort) endpoint; {@code false} queries it as a
-     *            filtered endpoint
+     * @param stack       the fluid being routed (never null)
+     * @param defaultPath {@code true} queries the module as a default-path (last resort) endpoint; {@code false}
+     *                    queries it as a filtered endpoint
      * @return the amount (0 to {@code stack.amount}) this module can take right now
      */
     int sinkAmount(FluidStack stack, boolean defaultPath);

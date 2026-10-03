@@ -15,8 +15,8 @@ import logisticspipes.utils.gui.GuiStringHandlerButton;
 import logisticspipes.utils.string.StringUtils;
 
 /**
- * GUI for the Fluid Sink module. The same 9-slot filter plus default-route toggle as the item sink, minus fuzzy matching
- * and the import button (fluid identity already comes from the container's NBT). Reuses the item-sink texture.
+ * GUI for the Fluid Sink module. The same 9-slot filter plus default-route toggle as the item sink, minus fuzzy
+ * matching and the import button (fluid identity already comes from the container's NBT). Reuses the item-sink texture.
  */
 public class GuiFluidSink extends ModuleBaseGui {
 
@@ -53,7 +53,8 @@ public class GuiFluidSink extends ModuleBaseGui {
                         height / 2 - 34,
                         30,
                         20,
-                        () -> StringUtils.translate(GuiFluidSink.PREFIX + (_fluidSink.isDefaultRoute() ? "Yes" : "No"))));
+                        () -> StringUtils
+                                .translate(GuiFluidSink.PREFIX + (_fluidSink.isDefaultRoute() ? "Yes" : "No"))));
     }
 
     @Override
@@ -69,7 +70,8 @@ public class GuiFluidSink extends ModuleBaseGui {
     @Override
     protected void drawGuiContainerForegroundLayer(int par1, int par2) {
         mc.fontRenderer.drawString(_fluidSink.getFilterInventory().getInventoryName(), 8, 6, 0x404040);
-        mc.fontRenderer.drawString(StringUtils.translate("gui.logisticspipes.inventory.title"), 8, ySize - 92, 0x404040);
+        mc.fontRenderer
+                .drawString(StringUtils.translate("gui.logisticspipes.inventory.title"), 8, ySize - 92, 0x404040);
         mc.fontRenderer.drawString(StringUtils.translate(GuiFluidSink.PREFIX + "Defaultroute") + ":", 65, 45, 0x404040);
     }
 
