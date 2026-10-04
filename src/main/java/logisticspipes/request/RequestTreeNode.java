@@ -2,9 +2,11 @@ package logisticspipes.request;
 
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -380,8 +382,11 @@ public class RequestTreeNode {
         // tell how long that will take.
         validSources.sort(wSorter);
 
+        // Second and later recipes from one chassis: tried only after every first-choice crafter, one at a time, so
+        // they cover what the preferred recipe can't instead of splitting work with it.
+        Set<ICraftingTemplate> fallbacks = Collections.newSetFromMap(new IdentityHashMap<>());
         List<Pair<ICraftingTemplate, List<IFilter>>> allCraftersForItem = RequestTreeNode
-                .getCrafters(getRequestType(), validSources);
+                .getCrafters(getRequestType(), validSources, fallbacks);
 
         // if you have a crafter which can make the top treeNode.getStack().getItem()
         Iterator<Pair<ICraftingTemplate, List<IFilter>>> iterAllCrafters = allCraftersForItem.iterator();
@@ -406,8 +411,10 @@ public class RequestTreeNode {
 
             int itemsNeeded = getMissingAmount();
 
-            if (lastCrafter != null
-                    && (craftersSamePriority.isEmpty() || (currentPriority == lastCrafter.getValue1().getPriority()))) {
+            // A fallback recipe never joins a group already being filled; it gets a turn of its own.
+            if (lastCrafter != null && (craftersSamePriority.isEmpty()
+                    || (currentPriority == lastCrafter.getValue1().getPriority()
+                            && !fallbacks.contains(lastCrafter.getValue1())))) {
                 currentPriority = lastCrafter.getValue1().getPriority();
                 Pair<ICraftingTemplate, List<IFilter>> crafter = lastCrafter;
                 lastCrafter = null;
@@ -590,25 +597,36 @@ public class RequestTreeNode {
         }
     }
 
+    /**
+     * Each pipe's first recipe in route order, then every further recipe a pipe offers (a chassis with several modules
+     * making the item), also in route order. The further ones are put in {@code fallbacks}.
+     */
     private static List<Pair<ICraftingTemplate, List<IFilter>>> getCrafters(IResource iRequestType,
-            List<ExitRoute> validDestinations) {
+            List<ExitRoute> validDestinations, Set<ICraftingTemplate> fallbacks) {
         List<Pair<ICraftingTemplate, List<IFilter>>> crafters = new ArrayList<>(validDestinations.size());
+        List<Pair<ICraftingTemplate, List<IFilter>>> alternatives = new ArrayList<>();
         for (ExitRoute r : validDestinations) {
             CoreRoutedPipe pipe = r.destination.getPipe();
             if (r.containsFlag(PipeRoutingConnectionType.canRequestFrom)) {
                 if (pipe instanceof ICraft) {
-                    ICraftingTemplate craftable = ((ICraft) pipe).addCrafting(iRequestType);
-                    if (craftable != null) {
-                        for (IFilter filter : r.filters) {
-                            if (filter.isBlocked() == filter.isFilteredItem(craftable.getResultResource())
-                                    || filter.blockCrafting()) {}
+                    List<ICraftingTemplate> craftables = ((ICraft) pipe).addCraftingAll(iRequestType);
+                    for (int i = 0; i < craftables.size(); i++) {
+                        ICraftingTemplate craftable = craftables.get(i);
+                        if (craftable == null) {
+                            continue;
                         }
                         List<IFilter> list = new LinkedList<>(r.filters);
-                        crafters.add(new Pair<>(craftable, list));
+                        if (i == 0) {
+                            crafters.add(new Pair<>(craftable, list));
+                        } else {
+                            alternatives.add(new Pair<>(craftable, list));
+                            fallbacks.add(craftable);
+                        }
                     }
                 }
             }
         }
+        crafters.addAll(alternatives);
         // don't need to sort, as a sorted list is passed in and List guarantees order preservation
         // Collections.sort(crafters,new CraftingTemplate.PairPrioritizer());
         return crafters;

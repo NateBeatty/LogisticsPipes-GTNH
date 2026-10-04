@@ -833,6 +833,30 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         // trixy code goes here to ensure the right crafter answers the right request
     }
 
+    /**
+     * One recipe per crafting module that makes the resource, highest crafter priority first and slot order among
+     * equals. {@link #addCrafting} only answers with the first slot, so a second recipe for the same item in this
+     * chassis was never tried when the first lacked materials.
+     */
+    @Override
+    public List<ICraftingTemplate> addCraftingAll(IResource toCraft) {
+        List<ICraftingTemplate> templates = new ArrayList<>();
+        for (int i = 0; i < getChassiSize(); i++) {
+            LogisticsModule x = _module.getSubModule(i);
+
+            if (x instanceof ICraftItems && ((ICraftItems) x).canCraft(toCraft)) {
+                ICraftingTemplate template = ((ICraftItems) x).addCrafting(toCraft);
+                if (template != null) {
+                    templates.add(template);
+                }
+            }
+        }
+        // The planner tries the first one as this chassis's preferred recipe and the rest as fallbacks, in this order.
+        // List.sort is stable, so equal priorities keep their slot order.
+        templates.sort((a, b) -> Integer.compare(b.getPriority(), a.getPriority()));
+        return templates;
+    }
+
     @Override
     public List<ItemIdentifierStack> getConfiguredCraftResults() {
         List<ItemIdentifierStack> craftables = null;

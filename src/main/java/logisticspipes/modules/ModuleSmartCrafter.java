@@ -115,11 +115,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * ingredients are left in the machine. Covers results that never come back to this module.
      */
     private static final int STUCK_TICKS = 400;
-    /**
-     * How long to leave a machine alone while waiting for an ingredient another crafter has to make, before assuming
-     * the guess was wrong and going ahead.
-     */
-    private static final int INTERMEDIATE_WAIT_TICKS = 200;
     /** Upper limit on stacks pulled out in one sweep, so a huge leftover pile can't flood the network at once. */
     private static final int MAX_SWEEP_STACKS = 64;
     /** How often results no order is waiting for are cleared out of the machine. */
@@ -2362,7 +2357,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Whether every ingredient that <b>another crafter has to make</b> is already on hand: in a buffer, on its way
+     * Whether every ingredient that <b>another crafter is still making</b> is already on hand: in a buffer, on its way
      * here, or sitting in the machine. Raw materials are taken on trust, because the planner already found a source for
      * them and a provider only sends once the gate opens - waiting for those would deadlock against ourselves.
      * <p>
@@ -2378,7 +2373,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             ItemIdentifierStack material = getMaterials(slot);
             ItemIdentifier item = material.getItem();
-            if (!isCraftedByAnother(item)) {
+            if (!isBeingCraftedByAnother(item)) {
                 continue;
             }
             int onHand = inFlight[slot] + bufferedFor(slot) + machineStock(item);
@@ -2401,7 +2396,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
-            if (!isFluidCraftedByAnother(fluid)) {
+            if (!isFluidBeingCraftedByAnother(fluid)) {
                 continue;
             }
             int onHand;
@@ -2436,7 +2431,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             ItemIdentifier item = material.getItem();
-            if (!isCraftedByAnother(item)) {
+            if (!isBeingCraftedByAnother(item)) {
                 continue;
             }
             int onHand = itemsInSatelliteMachine(slot, item);
@@ -2499,12 +2494,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Yields the machine while an intermediate is missing, but not for ever.
-     * <p>
-     * The readiness test can be wrong in one direction: an item another crafter makes may *also* be sitting in storage,
-     * in which case the planner sourced it from a provider and it will only move once the gate opens. Waiting on it
-     * would stall a craft that was never blocked. So after {@link #INTERMEDIATE_WAIT_TICKS} the crafter goes ahead
-     * anyway, and the handover rule below takes over if that turns out to be the wrong guess.
+     * Yields the machine while an intermediate is still being made. The wait has no time limit: a deep job on one
+     * machine can keep its last step waiting for minutes, and going ahead early is exactly what puts that step's raw
+     * materials into the machine before its sub-crafts have run there. An intermediate that is actually coming out of
+     * storage is not waited on in the first place (see {@link #isBeingCraftedByAnother}), so this cannot stall a craft
+     * that was never blocked. Waiting never holds a claim, so it cannot block the crafter it waits on either.
      */
     private boolean waitedLongEnoughForIntermediates() {
         if (intermediatesReady()) {
@@ -2514,21 +2508,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (waitingForIntermediatesSince == 0) {
             waitingForIntermediatesSince = now();
         }
-        return now() - waitingForIntermediatesSince >= INTERMEDIATE_WAIT_TICKS;
+        return false;
     }
 
     private long waitingForIntermediatesSince = 0;
 
     /**
-     * Whether some other loaded Smart Crafter makes this item, i.e. it is an intermediate rather than a raw material.
+     * Whether some other loaded Smart Crafter is making this item right now, i.e. it has orders for it outstanding.
+     * <p>
+     * Asking only "could another crafter make it" is not enough: an item a crafter can make may also be in storage, in
+     * which case the planner sourced it from a provider, no crafter has an order for it, and it only moves once this
+     * gate opens - waiting on it would never end. With outstanding orders as the test, that case is ready at once,
+     * and a real intermediate is waited on until its crafter has delivered it (from then on it is counted as on hand).
      */
-    private boolean isCraftedByAnother(ItemIdentifier item) {
+    private boolean isBeingCraftedByAnother(ItemIdentifier item) {
         for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
-            if (crafter == this) {
+            if (crafter == this || crafter._service == null) {
                 continue;
             }
             for (ItemIdentifierStack result : crafter.getConfiguredCraftResults()) {
-                if (result.getItem().equals(item)) {
+                if (result.getItem().equals(item) && crafter.outstandingResults(result) > 0) {
                     return true;
                 }
             }
@@ -2537,11 +2536,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Whether some other loaded Smart Crafter makes this fluid as a Product, i.e. it is an intermediate rather than a
-     * raw material. Fluid results are not in {@link #getConfiguredCraftResults()} (items only), so this walks the same
-     * crafters against their fluid results instead.
+     * The fluid twin of {@link #isBeingCraftedByAnother}: some other loaded Smart Crafter makes this fluid as a Product
+     * and still has orders for it. Fluid results are not in {@link #getConfiguredCraftResults()} (items only), so this
+     * walks the crafters' fluid results and fluid orders instead.
      */
-    private boolean isFluidCraftedByAnother(FluidIdentifier fluid) {
+    private boolean isFluidBeingCraftedByAnother(FluidIdentifier fluid) {
         if (fluid == null) {
             return false;
         }
@@ -2549,7 +2548,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (crafter == this) {
                 continue;
             }
-            if (crafter.fluidResultSlot(fluid) >= 0) {
+            if (crafter.fluidResultSlot(fluid) >= 0 && crafter.outstandingFluid(fluid) > 0) {
                 return true;
             }
         }
