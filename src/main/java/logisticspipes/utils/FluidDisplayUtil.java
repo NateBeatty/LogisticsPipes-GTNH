@@ -33,4 +33,15 @@ public final class FluidDisplayUtil {
         }
         return GREGTECH ? GregTechFluidDisplay.getFluid(stack) : null;
     }
+
+    /**
+     * @return GregTech's display stack for this fluid, for drawing it the way NEI and GT machines do, or null without
+     *         GregTech
+     */
+    public static ItemStack getDisplayStack(FluidStack fluid) {
+        if (!GREGTECH || fluid == null || fluid.getFluid() == null) {
+            return null;
+        }
+        return GregTechFluidDisplay.makeDisplayStack(fluid);
+    }
 }

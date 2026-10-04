@@ -1,5 +1,8 @@
 package logisticspipes.renderer;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.renderer.Tessellator;
@@ -11,6 +14,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.IIcon;
 import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.client.IItemRenderer;
+import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidStack;
 
 import org.lwjgl.input.Keyboard;
@@ -22,6 +26,7 @@ import cpw.mods.fml.relauncher.SideOnly;
 import logisticspipes.items.LogisticsFluidContainer;
 import logisticspipes.items.LogisticsItemCard;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.utils.FluidDisplayUtil;
 import logisticspipes.utils.MinecraftColor;
 import logisticspipes.utils.item.ItemIdentifierStack;
 
@@ -76,6 +81,16 @@ public class FluidContainerRenderer implements IItemRenderer {
                 GL11.glPopMatrix();
                 return;
             }
+            if (type == ItemRenderType.INVENTORY) {
+                // In a slot, show the fluid the way NEI and GT machines do, so a recipe's fluid ingredients look like
+                // its fluid results.
+                ItemStack display = getGregTechDisplay(liquid);
+                if (display != null) {
+                    doRenderItem(display, mc, type, data);
+                    GL11.glPopMatrix();
+                    return;
+                }
+            }
             doRenderFluid(liquid, mc, type, data);
             doRenderItem(item, mc, type, data);
         } else if (item.getItem() instanceof LogisticsItemCard) {
@@ -111,6 +126,20 @@ public class FluidContainerRenderer implements IItemRenderer {
             }
         }
         GL11.glPopMatrix();
+    }
+
+    /** GregTech's display stack per fluid, built once: slots are drawn every frame. */
+    private final Map<Fluid, ItemStack> gregTechDisplays = new HashMap<>();
+
+    private ItemStack getGregTechDisplay(FluidStack liquid) {
+        Fluid fluid = liquid.getFluid();
+        if (fluid == null) {
+            return null;
+        }
+        if (!gregTechDisplays.containsKey(fluid)) {
+            gregTechDisplays.put(fluid, FluidDisplayUtil.getDisplayStack(new FluidStack(fluid, 0)));
+        }
+        return gregTechDisplays.get(fluid);
     }
 
     public void doRenderFluid(FluidStack liquid, Minecraft mc, ItemRenderType type, Object[] data) {

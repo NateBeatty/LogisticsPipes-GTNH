@@ -1511,7 +1511,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 }
                 return;
             case SmartCrafterSetting.FLUID_AMOUNT:
-                if (index >= 0 && index < INGREDIENT_SLOTS) {
+                // Result slots too: the gui sends their inventory slot, and a fluid result's litres are per set as well.
+                if (index >= 0 && index < INVENTORY_SIZE) {
                     setFluidAmount(index, value);
                 }
                 return;
@@ -1759,6 +1760,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
             outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
             outputChance[i] = GUARANTEED;
         }
+        // Setting slots directly fires no change listener, so a GT fluid display in a result slot would stay an item
+        // and the crafter would advertise "GT fluid display" instead of the fluid its consumers ask for.
+        refreshFluidSlots();
         if (player != null) {
             MainProxy.sendPacketToPlayer(getCPipePacket(), player);
         }

@@ -19,4 +19,9 @@ public final class GregTechFluidDisplay {
     public static FluidStack getFluid(ItemStack stack) {
         return GTUtility.getFluidFromDisplayStack(stack);
     }
+
+    /** GregTech's display stack for this fluid, with no amount drawn on it. */
+    public static ItemStack makeDisplayStack(FluidStack fluid) {
+        return GTUtility.getFluidDisplayStack(fluid, false, true);
+    }
 }

@@ -31,7 +31,7 @@ public class SmartCrafterSetting extends ModuleCoordinatesPacket {
     public static final int REFRESH = 5;
     /** Stored and shown, but nothing acts on it until the Smart Satellite exists. */
     public static final int OUTPUT_SATELLITE = 6;
-    /** Litres for a fluid ingredient slot. */
+    /** Litres for a fluid ingredient or result slot (index is the inventory slot). */
     public static final int FLUID_AMOUNT = 7;
 
     @Getter
