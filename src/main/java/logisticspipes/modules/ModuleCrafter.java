@@ -41,6 +41,7 @@ import logisticspipes.interfaces.IWorldProvider;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.ICraftItems;
 import logisticspipes.interfaces.routing.IFilter;
+import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IItemSpaceControl;
 import logisticspipes.interfaces.routing.IRequest;
 import logisticspipes.interfaces.routing.IRequestFluid;
@@ -1485,6 +1486,10 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 _service.getItemOrderManager().deferSend();
                 break;
             }
+            if (route == ResultRoute.TO_ORDER) {
+                // A Smart Crafter takes only what its released sets still need; the rest waits for its next set.
+                maxtosend = Math.min(maxtosend, gatedAllowance(nextOrder));
+            }
             // retrieve the new crafted items
             ItemStack extracted = null;
             AdjacentTile tile = null;
@@ -1558,6 +1563,14 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     item.setTransportMode(TransportMode.Active);
                     item.setAdditionalTargetInformation(nextOrder.getInformation());
                     queueResult(tile, item);
+                    IGatedItemSink gate = gateFor(nextOrder);
+                    if (gate != null) {
+                        // Counted as on its way, so the gate doesn't hand out the same room twice.
+                        gate.onGatedSend(
+                                ItemIdentifier.get(stackToSend),
+                                stackToSend.stackSize,
+                                nextOrder.getInformation());
+                    }
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item);
                 } else {
                     sendUnrouted(tile, stackToSend, nextOrder.getInformation());
@@ -1623,15 +1636,52 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         HOLD
     }
 
-    /** Called when a result for an order is sent to a crafting buffer instead of to the order's destination. */
-    protected void onResultBuffered(LogisticsItemOrder order, int amount) {}
+    /**
+     * A result is going to a buffer for the Smart Crafter that ordered it: give that crafter credit for it, so it takes
+     * this stock from the buffer and nothing else.
+     */
+    protected void onResultBuffered(LogisticsItemOrder order, int amount) {
+        IGatedItemSink gate = gateFor(order);
+        if (gate instanceof ModuleSmartCrafter) {
+            ((ModuleSmartCrafter) gate).creditBuffered(order.getInformation(), amount);
+        }
+    }
 
     /**
-     * Lets a subclass divert a result that the destination can't take yet. The base always sends to the order, which is
-     * what the crafter has always done.
+     * Where a finished result goes. A result for a Smart Crafter's machine only goes there while that crafter's gate is
+     * open; otherwise it waits in a crafting buffer, or in this machine when no buffer has room, so it can't land in a
+     * machine another recipe is using. Every other result goes straight to its order, as it always has.
      */
     protected ResultRoute routeForResult(LogisticsItemOrder order) {
-        return ResultRoute.TO_ORDER;
+        if (gatedAllowance(order) > 0) {
+            return ResultRoute.TO_ORDER;
+        }
+        return bufferWithRoomFor(order.getResource().getItem()) != null ? ResultRoute.TO_BUFFER : ResultRoute.HOLD;
+    }
+
+    /** How much of the order's item its destination takes right now. Unlimited unless that is a gated Smart Crafter. */
+    private static int gatedAllowance(LogisticsItemOrder order) {
+        IGatedItemSink gate = gateFor(order);
+        return gate == null ? Integer.MAX_VALUE
+                : gate.getGatedAllowance(order.getResource().getItem(), order.getInformation());
+    }
+
+    /** The gated Smart Crafter (or Smart Satellite) an order is addressed to, or null. */
+    private static IGatedItemSink gateFor(LogisticsItemOrder order) {
+        if (order.getDestination() == null) {
+            return null;
+        }
+        IRouter router = order.getDestination().getRouter();
+        return router == null ? null : IGatedItemSink.findTarget(router, order.getInformation());
+    }
+
+    private static ModuleCraftingBuffer bufferWithRoomFor(ItemIdentifier item) {
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            if (buffer.hasRoomFor(item, 1)) {
+                return buffer;
+            }
+        }
+        return null;
     }
 
     /**

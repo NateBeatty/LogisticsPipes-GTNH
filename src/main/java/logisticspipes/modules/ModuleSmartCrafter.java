@@ -280,60 +280,17 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Sends a result to a buffer when the crafter that ordered it can't take it yet, and holds it in the machine when
-     * no buffer will have it. Pushing it at a machine that isn't ready is what makes items bounce, and bouncing is what
-     * this module exists to stop.
+     * The routing itself lives in {@link ModuleCrafter#routeForResult}, which normal crafters share so their results
+     * can't slip into a Smart Crafter's machine early either. This only remembers a held result for the status view.
      */
     @Override
     protected ResultRoute routeForResult(LogisticsItemOrder order) {
-        ResultRoute route = chooseResultRoute(order);
+        ResultRoute route = super.routeForResult(order);
         resultHeld = route == ResultRoute.HOLD;
         LogisticsPipes.log.info(
                 "[Buffer DEBUG] result " + order.getResource()
                         .getItem() + " -> " + route + " (buffers=" + ModuleCraftingBuffer.AllBuffers.size() + ")");
         return route;
-    }
-
-    /**
-     * A result is going to a buffer for the crafter that ordered it: give that crafter credit for it, so it takes this
-     * stock from the buffer and nothing else.
-     */
-    @Override
-    protected void onResultBuffered(LogisticsItemOrder order, int amount) {
-        if (order.getDestination() == null) {
-            return;
-        }
-        IGatedItemSink target = IGatedItemSink.findTarget(order.getDestination().getRouter(), order.getInformation());
-        if (target instanceof ModuleSmartCrafter) {
-            ((ModuleSmartCrafter) target).creditBuffered(order.getInformation(), amount);
-        }
-    }
-
-    private ResultRoute chooseResultRoute(LogisticsItemOrder order) {
-        if (order.getDestination() == null || destinationCanTake(order)) {
-            return ResultRoute.TO_ORDER;
-        }
-        ItemIdentifier result = order.getResource().getItem();
-        return bufferWithRoomFor(result) != null ? ResultRoute.TO_BUFFER : ResultRoute.HOLD;
-    }
-
-    /** Whether the crafter this result is for has its gate open. Anything that isn't gated is assumed ready. */
-    private boolean destinationCanTake(LogisticsItemOrder order) {
-        IRouter router = order.getDestination().getRouter();
-        if (router == null) {
-            return true;
-        }
-        IGatedItemSink gate = IGatedItemSink.findTarget(router, order.getInformation());
-        return gate == null || gate.getGatedAllowance(order.getResource().getItem(), order.getInformation()) > 0;
-    }
-
-    private ModuleCraftingBuffer bufferWithRoomFor(ItemIdentifier item) {
-        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
-            if (buffer.hasRoomFor(item, 1)) {
-                return buffer;
-            }
-        }
-        return null;
     }
 
     /**
