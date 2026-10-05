@@ -166,11 +166,20 @@ public class GuiChassiPipe extends LogisticsBaseGuiScreen {
             String tags = tagsField != null ? tagsField.getText() : savedTags;
             nameField = new GuiTextField(fontRendererObj, guiLeft + 38, guiTop + 7, xSize - 80, 12);
             nameField.setMaxStringLength(PipeLabel.MAX_NAME_LENGTH);
-            nameField.setText(name);
+            setFieldText(nameField, name);
             tagsField = new GuiTextField(fontRendererObj, guiLeft + 38, guiTop + 22, xSize - 46, 12);
             tagsField.setMaxStringLength(PipeLabel.MAX_TAGS_LENGTH);
-            tagsField.setText(tags);
+            setFieldText(tagsField, tags);
         }
+    }
+
+    /**
+     * Sets the text and shows it from the start. setText leaves the field scrolled to the end, and when the text is
+     * just wider than the field, vanilla draws its selection box over the last letter there instead of the letter.
+     */
+    private static void setFieldText(GuiTextField field, String text) {
+        field.setText(text);
+        field.setCursorPositionZero();
     }
 
     @Override
@@ -198,8 +207,8 @@ public class GuiChassiPipe extends LogisticsBaseGuiScreen {
         if (!hasLabel || nameField == null) {
             return;
         }
-        nameField.setText(name);
-        tagsField.setText(tags);
+        setFieldText(nameField, name);
+        setFieldText(tagsField, tags);
         icon = suggestedIcon;
     }
 
