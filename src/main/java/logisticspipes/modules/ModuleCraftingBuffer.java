@@ -146,6 +146,35 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         return inv != null && inv.roomForItem(item, count) >= count;
     }
 
+    /** How many of an item the chest still takes, counting no further than {@code max}. */
+    public int roomFor(ItemIdentifier item, int max) {
+        IInventoryUtil inv = inventory();
+        return inv == null || max <= 0 ? 0 : Math.min(max, inv.roomForItem(item, max));
+    }
+
+    /**
+     * The chassis router this module sits in. A provider parking raw materials here sends them to it directly, so they
+     * land in this chest whatever else the network's sinks would say.
+     */
+    public int getBufferRouter() {
+        return _service == null || _service.getRouter() == null ? -1 : _service.getRouter().getSimpleID();
+    }
+
+    /** What an item sent here directly carries, so the chassis reports its arrival to this module. */
+    public IAdditionalTargetInformation getTargetInformation() {
+        return new ChassiTargetInformation(getPositionInt());
+    }
+
+    /** A loaded buffer with room for at least one of this item, or null when none has. */
+    public static ModuleCraftingBuffer withRoomFor(ItemIdentifier item) {
+        for (ModuleCraftingBuffer buffer : AllBuffers) {
+            if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(item, 1)) {
+                return buffer;
+            }
+        }
+        return null;
+    }
+
     /**
      * Takes items out for a crafter, up to what is actually here. Asking for more than the buffer holds must not come
      * back empty: {@code getMultipleItems} is all-or-nothing, so a crafter wanting 16 plates from a buffer holding 15

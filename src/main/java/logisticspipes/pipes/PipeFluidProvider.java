@@ -23,6 +23,7 @@ import logisticspipes.interfaces.routing.IProvideFluids;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.logisticspipes.IRoutedItem;
 import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
+import logisticspipes.modules.ModuleFluidCraftingBuffer;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.pipes.basic.fluid.FluidRoutedPipe;
 import logisticspipes.proxy.SimpleServiceLocator;
@@ -54,17 +55,34 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         }
 
         LogisticsFluidOrder order = getFluidOrderManager().peekAtTopRequest(ResourceType.PROVIDER);
-        int amountToSend, attemptedAmount;
-        attemptedAmount = amountToSend = Math
-                .min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
-        // A Smart Crafter consumer only lets in what its machine can take right now; the rest stays in storage for the
-        // next pass. attemptedAmount keeps the original, so a fully-gated pass still reads as "sent nothing" (retry)
-        // rather than a failed order. Anything that is not a Smart Crafter has no fluid gate and takes the full amount.
+        int amountToSend = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
+        int destination = order.getRouter().getSimpleID();
+        // A Smart Crafter consumer only lets in what its machine can take right now, the same as the item providers and
+        // the Smart Crafter's own fluid outputs treat it. With its gate shut the fluid goes to a fluid buffer, credited
+        // to the consumer, which pulls it once a set is released; with no buffer room the order goes to the back of the
+        // queue, so one consumer that can't take anything doesn't hold up every order behind it. Anything that is not a
+        // Smart Crafter has no fluid gate and takes the full amount, as it always has.
         IRequestFluid consumer = order.getDestination();
-        if (consumer instanceof ModuleSmartCrafter) {
-            amountToSend = Math
-                    .min(amountToSend, ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(order.getFluid()));
+        ModuleSmartCrafter gated = consumer instanceof ModuleSmartCrafter ? (ModuleSmartCrafter) consumer : null;
+        boolean toBuffer = false;
+        if (gated != null) {
+            int allowed = gated.getFluidGatedAllowance(order.getFluid());
+            if (allowed <= 0) {
+                // Room for any of it is enough: the rest follows on later passes, the same as a gate that only lets
+                // part through. Waiting for room for the whole chunk could wait for ever on a small buffer.
+                ModuleFluidCraftingBuffer buffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1);
+                if (buffer == null) {
+                    getFluidOrderManager().deferSend();
+                    return;
+                }
+                amountToSend = buffer.roomFor(order.getFluid(), amountToSend);
+                destination = buffer.getBufferRouter();
+                toBuffer = true;
+            } else {
+                amountToSend = Math.min(amountToSend, allowed);
+            }
         }
+        int sent = 0;
         for (Pair<TileEntity, ForgeDirection> pair : getAdjacentTanks(false)) {
             if (amountToSend <= 0) {
                 break;
@@ -83,13 +101,15 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
                                 .drainFrom(pair.getValue1(), order.getFluid(), amountToSend, true);
                         int amount = drained.amount;
                         amountToSend -= amount;
+                        sent += amount;
                         ItemIdentifierStack stack = SimpleServiceLocator.logisticsFluidManager
                                 .getFluidContainer(drained);
                         IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack);
-                        item.setDestination(order.getRouter().getSimpleID());
+                        item.setDestination(destination);
                         item.setTransportMode(TransportMode.Active);
                         this.queueRoutedItem(item, pair.getValue2());
                         getFluidOrderManager().sendSuccessfull(amount, false, item);
+                        reportGatedSend(gated, toBuffer, order.getFluid(), amount);
                         if (amountToSend <= 0) {
                             break;
                         }
@@ -131,13 +151,15 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
                                     }
                                     amount = drained.amount;
                                     amountToSend -= amount;
+                                    sent += amount;
                                     ItemIdentifierStack stack = SimpleServiceLocator.logisticsFluidManager
                                             .getFluidContainer(drained);
                                     IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack);
-                                    item.setDestination(order.getRouter().getSimpleID());
+                                    item.setDestination(destination);
                                     item.setTransportMode(TransportMode.Active);
                                     this.queueRoutedItem(item, pair.getValue2());
                                     getFluidOrderManager().sendSuccessfull(amount, false, item);
+                                    reportGatedSend(gated, toBuffer, order.getFluid(), amount);
                                     if (amountToSend <= 0) {
                                         break;
                                     }
@@ -148,8 +170,26 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
                 }
             }
         }
-        if (amountToSend >= attemptedAmount) {
+        // Nothing could be drained: the tanks don't hold the fluid any more. Not the same as being gated, which never
+        // gets this far.
+        if (sent <= 0) {
             getFluidOrderManager().sendFailed();
+        }
+    }
+
+    /**
+     * Tells a Smart Crafter consumer what was just sent for it, so its gate stays honest: fluid sent to its machine is
+     * counted as on its way (as the item providers report with {@code onGatedSend}), fluid parked in a buffer as owed
+     * to it.
+     */
+    private static void reportGatedSend(ModuleSmartCrafter gated, boolean toBuffer, FluidIdentifier fluid, int amount) {
+        if (gated == null || amount <= 0) {
+            return;
+        }
+        if (toBuffer) {
+            gated.creditFluidBuffered(fluid, amount);
+        } else {
+            gated.onFluidGatedSend(fluid, amount);
         }
     }
 

@@ -163,6 +163,30 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
         return room >= amount;
     }
 
+    /** How much of this fluid the tank still takes, counting no further than {@code max}. */
+    public int roomFor(FluidIdentifier fluid, int max) {
+        IFluidHandler tank = getTank();
+        if (tank == null || fluid == null || max <= 0) {
+            return 0;
+        }
+        FluidStack preview = fluid.makeFluidStack(max);
+        int room = tank.fill(storageSide(), preview, false);
+        if (room <= 0) {
+            room = tank.fill(ForgeDirection.UNKNOWN, preview, false);
+        }
+        return Math.max(0, Math.min(max, room));
+    }
+
+    /** A loaded buffer that can still take this much of this fluid, or null when none of them can. */
+    public static ModuleFluidCraftingBuffer withRoomFor(FluidIdentifier fluid, int amount) {
+        for (ModuleFluidCraftingBuffer buffer : AllBuffers) {
+            if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(fluid, amount)) {
+                return buffer;
+            }
+        }
+        return null;
+    }
+
     /**
      * Pours an addressed container into the tank it faces. The receiver owns the fluid from then on, so whatever the
      * tank can't take is sent back into the network (nearest fluid sink) rather than voided or left in the pipe.

@@ -350,28 +350,40 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
             _service.getItemOrderManager().sendFailed();
             return 0;
         }
-        SinkReply reply = LogisticsManager.canSink(dRtr, null, true, stack.getItem(), null, true, false);
-        boolean defersend = false;
-        if (reply != null) { // some pipes are not aware of the space in the adjacent inventory, so they return null
-            if (reply.maxNumberOfItems < wanted) {
-                wanted = reply.maxNumberOfItems;
-                if (wanted <= 0) {
-                    _service.getItemOrderManager().deferSend();
-                    return 0;
-                }
-                defersend = true;
-            }
-        }
         IGatedItemSink gate = IGatedItemSink.findTarget(dRtr, info);
-        if (gate != null) {
-            int allowed = gate.getGatedAllowance(item, info);
-            if (allowed < wanted) {
-                wanted = allowed;
-                if (wanted <= 0) {
-                    _service.getItemOrderManager().deferSend();
-                    return 0;
+        boolean defersend = false;
+        // A Smart Crafter whose gate is shut gets its raw materials parked in a crafting buffer right away, credited to
+        // it, rather than left in storage until a set is released. Out of storage nothing else can take them, and the
+        // crafter can see the whole set is ready before it claims the machine.
+        ModuleCraftingBuffer buffer = ModuleSmartCrafter.bufferForShutGate(gate, item, info);
+        if (buffer != null) {
+            wanted = buffer.roomFor(item, wanted);
+            if (wanted <= 0) {
+                _service.getItemOrderManager().deferSend();
+                return 0;
+            }
+        } else {
+            SinkReply reply = LogisticsManager.canSink(dRtr, null, true, stack.getItem(), null, true, false);
+            if (reply != null) { // some pipes are not aware of the space in the adjacent inventory, so they return null
+                if (reply.maxNumberOfItems < wanted) {
+                    wanted = reply.maxNumberOfItems;
+                    if (wanted <= 0) {
+                        _service.getItemOrderManager().deferSend();
+                        return 0;
+                    }
+                    defersend = true;
                 }
-                defersend = true;
+            }
+            if (gate != null) {
+                int allowed = gate.getGatedAllowance(item, info);
+                if (allowed < wanted) {
+                    wanted = allowed;
+                    if (wanted <= 0) {
+                        _service.getItemOrderManager().deferSend();
+                        return 0;
+                    }
+                    defersend = true;
+                }
             }
         }
         if (!_service.canUseEnergy(wanted * neededEnergy())) {
@@ -386,6 +398,16 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
         int sent = removed.stackSize;
         _service.useEnergy(sent * neededEnergy());
 
+        if (buffer != null) {
+            ((ModuleSmartCrafter) gate).creditBuffered(info, sent);
+            IRoutedItem sendedItem = _service.sendStack(
+                    removed,
+                    buffer.getBufferRouter(),
+                    itemSendMode(),
+                    buffer.getTargetInformation());
+            _service.getItemOrderManager().sendSuccessfull(sent, false, sendedItem);
+            return sent;
+        }
         IRoutedItem sendedItem = _service.sendStack(removed, destination, itemSendMode(), info);
         _service.getItemOrderManager().sendSuccessfull(sent, defersend, sendedItem);
         if (gate != null) {
