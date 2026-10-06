@@ -8,6 +8,7 @@ import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.network.LPDataInputStream;
 import logisticspipes.network.LPDataOutputStream;
 import logisticspipes.network.abstractpackets.ModernPacket;
+import logisticspipes.utils.item.ItemIdentifierStack;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -44,6 +45,11 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
     @Setter
     private int status;
 
+    /** What {@link #status} is about, when it names an item; otherwise null. */
+    @Getter
+    @Setter
+    private ItemIdentifierStack statusItem;
+
     @Getter
     @Setter
     private int setsReleased;
@@ -71,6 +77,10 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         data.writeIntegerArray(fluidAmount);
         data.writeBoolean(cleanupEnabled);
         data.writeInt(status);
+        data.writeBoolean(statusItem != null);
+        if (statusItem != null) {
+            data.writeItemIdentifierStack(statusItem);
+        }
         data.writeInt(setsReleased);
     }
 
@@ -83,6 +93,7 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         fluidAmount = data.readIntegerArray();
         cleanupEnabled = data.readBoolean();
         status = data.readInt();
+        statusItem = data.readBoolean() ? data.readItemIdentifierStack() : null;
         setsReleased = data.readInt();
     }
 

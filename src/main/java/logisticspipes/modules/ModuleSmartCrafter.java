@@ -15,6 +15,7 @@ import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.ISidedInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.IIcon;
@@ -24,6 +25,7 @@ import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.FluidTankInfo;
 import net.minecraftforge.fluids.IFluidHandler;
 
+import cpw.mods.fml.common.Loader;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import logisticspipes.LogisticsPipes;
@@ -51,6 +53,7 @@ import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.proxy.gregtech.GregTechNonConsumed;
 import logisticspipes.request.FluidCraftingTemplate;
 import logisticspipes.request.IReqCraftingTemplate;
 import logisticspipes.request.RequestTree;
@@ -208,6 +211,19 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * own machine, whatever is set here.
      */
     private final int[] outputSatelliteId = new int[OUTPUT_SLOTS];
+
+    /**
+     * Ingredients the NEI-imported recipe needs in the machine but doesn't consume (molds, lenses, shapes, programmed
+     * circuits). They are not requested; they are only looked for, for the gui's warning line.
+     */
+    private final List<ItemIdentifier> nonConsumed = new ArrayList<>();
+    /**
+     * The first result when {@link #nonConsumed} was imported. Once the player sets up a different recipe by hand the
+     * list no longer belongs to it, and the warning stays quiet.
+     */
+    private ItemIdentifier nonConsumedFor = null;
+
+    private static final boolean GREGTECH = Loader.isModLoaded("gregtech");
 
     public ModuleSmartCrafter() {
         _dummyInventory = new ItemIdentifierInventory(
@@ -1412,9 +1428,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
             roles[i] = outputRole[i].ordinal();
             chances[i] = outputChance[i];
         }
+        int status = MainProxy.isServer(getWorld()) ? computeStatus() : lastStatus;
+        ItemIdentifierStack statusItem = null;
+        if (status == STATUS_NON_CONSUMED_MISSING) {
+            ItemIdentifier missing = MainProxy.isServer(getWorld()) ? missingNonConsumed() : null;
+            statusItem = missing != null ? missing.makeStack(1) : lastStatusItem;
+        }
         packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
-                .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled)
-                .setStatus(MainProxy.isServer(getWorld()) ? computeStatus() : lastStatus).setSetsReleased(setsReleased);
+                .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled).setStatus(status)
+                .setStatusItem(statusItem).setSetsReleased(setsReleased);
         packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
                 .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
                 .setLiquidSatelliteId(liquidSatelliteId);
@@ -1443,14 +1465,21 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         cleanupEnabled = packet.isCleanupEnabled();
         lastStatus = packet.getStatus();
+        lastStatusItem = packet.getStatusItem();
         setsReleased = packet.getSetsReleased();
     }
 
     /** Client-side copy of the last status the server sent, for the gui's warning line. */
     private int lastStatus = STATUS_IDLE;
+    /** The item the last status is about, if any (the missing non-consumed item). */
+    private ItemIdentifierStack lastStatusItem = null;
 
     public int getLastStatus() {
         return lastStatus;
+    }
+
+    public ItemIdentifierStack getLastStatusItem() {
+        return lastStatusItem;
     }
 
     /** Applies one setting from {@link SmartCrafterSetting}, on either side. */
@@ -1518,7 +1547,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public static final int STATUS_OUTPUT_PUSHES = 8;
     /** Same as {@link #STATUS_OUTPUT_PUSHES}, next to one of this recipe's output satellites. */
     public static final int STATUS_SATELLITE_OUTPUT_PUSHES = 9;
+    /** An item the recipe needs in the machine but doesn't consume isn't there; {@link #missingNonConsumed} names it. */
+    public static final int STATUS_NON_CONSUMED_MISSING = 10;
 
+    /**
+     * Worked out only when a gui asks for it, never on the module's tick, so a check that reads the machine's slots
+     * costs nothing while nobody is looking.
+     */
     public int computeStatus() {
         if (hasNoCraftableOutput()) {
             return STATUS_NO_PRODUCT;
@@ -1531,6 +1566,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         if (setTooLarge) {
             return STATUS_SET_TOO_LARGE;
+        }
+        // Before idle too, so the player sees it while setting the machine up. Only a warning: the craft is not held
+        // back for it, since the check can't see every place a machine may take the item from.
+        if (missingNonConsumed() != null) {
+            return STATUS_NON_CONSUMED_MISSING;
         }
         // Checked before idle, so it shows while the player is still setting up, before a result goes missing.
         if (OutputPushUtil.findPushingNeighbour(getWorld(), getX(), getY(), getZ()) != null) {
@@ -1547,6 +1587,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return STATUS_WAITING_CLAIM;
         }
         return setsReleased > 0 ? STATUS_RUNNING : STATUS_HOLDING;
+    }
+
+    /**
+     * The first of the imported recipe's non-consumed items the machine doesn't hold, or null when all are there, when
+     * there are none, or when this machine's slots can't settle it (see {@link GregTechNonConsumed#missingFrom}).
+     */
+    public ItemIdentifier missingNonConsumed() {
+        if (!GREGTECH || nonConsumed.isEmpty() || _service == null || getWorld() == null) {
+            return null;
+        }
+        ItemIdentifierStack first = getOutput(0);
+        if (first == null || !first.getItem().equals(nonConsumedFor)) {
+            return null;
+        }
+        ForgeDirection dir = _service.inventoryOrientation();
+        if (dir == null || dir == ForgeDirection.UNKNOWN) {
+            return null;
+        }
+        TileEntity machine = getWorld()
+                .getTileEntity(getX() + dir.offsetX, getY() + dir.offsetY, getZ() + dir.offsetZ);
+        return GregTechNonConsumed.missingFrom(machine, nonConsumed);
     }
 
     /** Whether a machine output next to any of this recipe's output satellites empties itself. */
@@ -1663,6 +1724,21 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 outputSatelliteId[i] = Math.max(0, satellites[i]);
             }
         }
+        nonConsumed.clear();
+        NBTTagList list = nbttagcompound.getTagList("SmartNonConsumed", 10);
+        for (int i = 0; i < list.tagCount(); i++) {
+            ItemStack stack = ItemStack.loadItemStackFromNBT(list.getCompoundTagAt(i));
+            if (stack != null && stack.getItem() != null) {
+                nonConsumed.add(ItemIdentifier.get(stack));
+            }
+        }
+        nonConsumedFor = null;
+        if (nbttagcompound.hasKey("SmartNonConsumedFor")) {
+            ItemStack stack = ItemStack.loadItemStackFromNBT(nbttagcompound.getCompoundTag("SmartNonConsumedFor"));
+            if (stack != null && stack.getItem() != null) {
+                nonConsumedFor = ItemIdentifier.get(stack);
+            }
+        }
         // The listener never fires for a load, so mark the fluid slots here.
         refreshFluidSlots();
     }
@@ -1681,12 +1757,44 @@ public class ModuleSmartCrafter extends ModuleCrafter
         nbttagcompound.setIntArray("SmartOutputSatellite", outputSatelliteId);
         nbttagcompound.setIntArray("SmartFluidAmount", fluidAmount);
         nbttagcompound.setBoolean("SmartCleanup", cleanupEnabled);
+        if (!nonConsumed.isEmpty() && nonConsumedFor != null) {
+            NBTTagList list = new NBTTagList();
+            for (ItemIdentifier item : nonConsumed) {
+                list.appendTag(item.makeNormalStack(1).writeToNBT(new NBTTagCompound()));
+            }
+            nbttagcompound.setTag("SmartNonConsumed", list);
+            nbttagcompound.setTag(
+                    "SmartNonConsumedFor",
+                    nonConsumedFor.makeNormalStack(1).writeToNBT(new NBTTagCompound()));
+        }
     }
 
     @Override
     public void handleAdvancedNEIRecipePacket(List<ItemStack> inputs, List<ItemStack> outputs,
             List<FluidStack> fluidInputs, EntityPlayer player) {
-        super.handleAdvancedNEIRecipePacket(inputs, outputs, fluidInputs, player);
+        handleSmartNEIRecipe(
+                inputs,
+                outputs,
+                Collections.<Integer>emptyList(),
+                Collections.<ItemStack>emptyList(),
+                fluidInputs,
+                player);
+    }
+
+    /**
+     * An NEI import. Outputs are laid out guaranteed first, in NEI's order, then chanced ones from the most likely down,
+     * so when a recipe has more outputs than there are slots it is the least likely ones that are left out. The first
+     * slot is the Product and the rest Byproducts, which with exactly one guaranteed output makes that one the Product
+     * and every chanced output a Byproduct.
+     *
+     * @param chances     whole percent per output; a missing entry counts as guaranteed
+     * @param nonConsumed ingredients the recipe needs in the machine but doesn't use up, already left out of
+     *                    {@code inputs}
+     */
+    public void handleSmartNEIRecipe(List<ItemStack> inputs, List<ItemStack> outputs, List<Integer> chances,
+            List<ItemStack> nonConsumed, List<FluidStack> fluidInputs, EntityPlayer player) {
+        // The base fills the grid; its packet back to the player is sent below, once this module's part is done too.
+        super.handleAdvancedNEIRecipePacket(inputs, outputs, fluidInputs, null);
         // The base puts fluids in the upgrade's separate fluid inventory, which this module doesn't have: here a fluid
         // is an ingredient slot like any other, so they follow the items into the grid.
         for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
@@ -1706,18 +1814,44 @@ public class ModuleSmartCrafter extends ModuleCrafter
             slot++;
         }
         // The base only fills two result slots, and the second one as the upgrade's byproduct slot.
+        List<Integer> order = new ArrayList<>();
+        for (int i = 0; i < outputs.size(); i++) {
+            if (outputs.get(i) != null) {
+                order.add(i);
+            }
+        }
+        // Stable, so outputs of equal chance keep NEI's order.
+        order.sort((a, b) -> Integer.compare(importedChance(chances, b), importedChance(chances, a)));
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            _dummyInventory
-                    .setInventorySlotContents(outputInventorySlot(i), i < outputs.size() ? outputs.get(i) : null);
+            int from = i < order.size() ? order.get(i) : -1;
+            _dummyInventory.setInventorySlotContents(outputInventorySlot(i), from >= 0 ? outputs.get(from) : null);
             outputRole[i] = i == 0 ? OutputRole.PRODUCT : OutputRole.BYPRODUCT;
-            outputChance[i] = GUARANTEED;
+            outputChance[i] = from >= 0 ? importedChance(chances, from) : GUARANTEED;
         }
         // Setting slots directly fires no change listener, so a GT fluid display in a result slot would stay an item
         // and the crafter would advertise "GT fluid display" instead of the fluid its consumers ask for.
         refreshFluidSlots();
+        this.nonConsumed.clear();
+        for (ItemStack stack : nonConsumed) {
+            if (stack != null && stack.getItem() != null) {
+                ItemIdentifier item = ItemIdentifier.get(stack);
+                if (!this.nonConsumed.contains(item)) {
+                    this.nonConsumed.add(item);
+                }
+            }
+        }
+        ItemIdentifierStack first = getOutput(0);
+        nonConsumedFor = this.nonConsumed.isEmpty() || first == null ? null : first.getItem();
         if (player != null) {
             MainProxy.sendPacketToPlayer(getCPipePacket(), player);
         }
+    }
+
+    private static int importedChance(List<Integer> chances, int output) {
+        if (output >= chances.size() || chances.get(output) == null) {
+            return GUARANTEED;
+        }
+        return Math.max(1, Math.min(GUARANTEED, chances.get(output)));
     }
 
     @Override
@@ -2033,7 +2167,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         extractedPerOutput[output] += amount;
         int finished = 0;
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            int perSet = resultPerSet(i);
+            int perSet = mostPerSet(i);
             if (perSet > 0) {
                 finished = Math.max(finished, extractedPerOutput[i] / perSet);
             }
@@ -2054,6 +2188,43 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         ItemIdentifierStack stack = getOutput(output);
         return stack == null ? 0 : stack.getStackSize();
+    }
+
+    /**
+     * The most of this slot's result one set can yield, counting every slot that makes the same thing. A recipe may make
+     * one item twice, 6 Wood Pulp plus 1 more at 80%, and both arrive as the same item credited to the first slot.
+     * Dividing by the 6 alone would count more sets finished than really were, and a crafter that thinks its last set
+     * is done hands the machine over while it is still working. Counting by the 7 only ever counts too few, which the
+     * stuck-set check already settles.
+     */
+    private int mostPerSet(int output) {
+        int perSet = resultPerSet(output);
+        if (perSet <= 0) {
+            return perSet;
+        }
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            if (i != output && sameResult(i, output)) {
+                perSet += Math.max(0, resultPerSet(i));
+            }
+        }
+        return perSet;
+    }
+
+    /** Whether two result slots make the same item, or the same fluid. */
+    private boolean sameResult(int a, int b) {
+        ItemIdentifierStack first = getOutput(a);
+        ItemIdentifierStack second = getOutput(b);
+        if (first == null || second == null) {
+            return false;
+        }
+        boolean fluid = isFluidSlot(outputInventorySlot(a));
+        if (fluid != isFluidSlot(outputInventorySlot(b))) {
+            return false;
+        }
+        if (fluid) {
+            return Objects.equals(getFluidIngredient(outputInventorySlot(a)), getFluidIngredient(outputInventorySlot(b)));
+        }
+        return first.getItem().equals(second.getItem());
     }
 
     private void clearResultProgress() {

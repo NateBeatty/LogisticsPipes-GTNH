@@ -448,6 +448,7 @@ gui.smartcrafter.status.6=Waiting for ingredients
 gui.smartcrafter.status.7=A fluid ingredient has nowhere to go - set a fluid satellite, or face a block that holds fluid
 gui.smartcrafter.status.8=An output bus/hatch here pushes results out by itself - soft-mallet it off
 gui.smartcrafter.status.9=An output bus/hatch at an output satellite pushes results out by itself - soft-mallet it off
+gui.smartcrafter.status.10=Missing from machine:
 
 gui.firewall.Blocked=Blocked
 gui.firewall.Allowed=Allowed

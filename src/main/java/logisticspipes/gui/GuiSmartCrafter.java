@@ -494,6 +494,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
             case ModuleSmartCrafter.STATUS_SET_TOO_LARGE:
             case ModuleSmartCrafter.STATUS_OUTPUT_PUSHES:
             case ModuleSmartCrafter.STATUS_SATELLITE_OUTPUT_PUSHES:
+            case ModuleSmartCrafter.STATUS_NON_CONSUMED_MISSING:
                 colour = 0xFFAA0000;
                 break;
             case ModuleSmartCrafter.STATUS_WAITING_CLAIM:
@@ -507,7 +508,10 @@ public class GuiSmartCrafter extends ModuleBaseGui {
         String text = StringUtils.translate(GuiSmartCrafter.PREFIX + "status." + status);
         if (status == ModuleSmartCrafter.STATUS_RUNNING) {
             text = text + " (" + crafter.getSetsReleased() + ")";
+        } else if (status == ModuleSmartCrafter.STATUS_NON_CONSUMED_MISSING && crafter.getLastStatusItem() != null) {
+            text = text + " " + crafter.getLastStatusItem().getItem().getFriendlyName();
         }
+        text = mc.fontRenderer.trimStringToWidth(text, xSize - 20);
         mc.fontRenderer.drawString(text, 10, STATUS_Y, colour & 0xFFFFFF);
     }
 }
