@@ -64,20 +64,19 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         // Smart Crafter has no fluid gate and takes the full amount, as it always has.
         IRequestFluid consumer = order.getDestination();
         ModuleSmartCrafter gated = consumer instanceof ModuleSmartCrafter ? (ModuleSmartCrafter) consumer : null;
-        boolean toBuffer = false;
+        ModuleFluidCraftingBuffer toBuffer = null;
         if (gated != null) {
             int allowed = gated.getFluidGatedAllowance(order.getFluid());
             if (allowed <= 0) {
                 // Room for any of it is enough: the rest follows on later passes, the same as a gate that only lets
                 // part through. Waiting for room for the whole chunk could wait for ever on a small buffer.
-                ModuleFluidCraftingBuffer buffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1);
-                if (buffer == null) {
+                toBuffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1);
+                if (toBuffer == null) {
                     getFluidOrderManager().deferSend();
                     return;
                 }
-                amountToSend = buffer.roomFor(order.getFluid(), amountToSend);
-                destination = buffer.getBufferRouter();
-                toBuffer = true;
+                amountToSend = toBuffer.roomFor(order.getFluid(), amountToSend);
+                destination = toBuffer.getBufferRouter();
             } else {
                 amountToSend = Math.min(amountToSend, allowed);
             }
@@ -180,13 +179,15 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
     /**
      * Tells a Smart Crafter consumer what was just sent for it, so its gate stays honest: fluid sent to its machine is
      * counted as on its way (as the item providers report with {@code onGatedSend}), fluid parked in a buffer as owed
-     * to it.
+     * to it. A buffer also keeps room for it until it arrives, so the next sender isn't told the same room.
      */
-    private static void reportGatedSend(ModuleSmartCrafter gated, boolean toBuffer, FluidIdentifier fluid, int amount) {
+    private static void reportGatedSend(ModuleSmartCrafter gated, ModuleFluidCraftingBuffer toBuffer,
+            FluidIdentifier fluid, int amount) {
         if (gated == null || amount <= 0) {
             return;
         }
-        if (toBuffer) {
+        if (toBuffer != null) {
+            toBuffer.reserve(fluid, amount);
             gated.creditFluidBuffered(fluid, amount);
         } else {
             gated.onFluidGatedSend(fluid, amount);

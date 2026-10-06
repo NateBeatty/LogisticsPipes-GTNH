@@ -399,6 +399,7 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
         _service.useEnergy(sent * neededEnergy());
 
         if (buffer != null) {
+            buffer.reserve(item, sent);
             ((ModuleSmartCrafter) gate).creditBuffered(info, sent);
             IRoutedItem sendedItem = _service.sendStack(
                     removed,

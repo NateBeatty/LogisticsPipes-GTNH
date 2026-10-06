@@ -1,8 +1,11 @@
 package logisticspipes.modules;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -151,30 +154,119 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
 
     /** Whether the tank can take this much of this fluid. A tank holds several fluids, so the answer is per fluid. */
     public boolean hasRoomFor(FluidIdentifier fluid, int amount) {
-        IFluidHandler tank = getTank();
-        if (tank == null || fluid == null || amount <= 0) {
-            return false;
-        }
-        FluidStack preview = fluid.makeFluidStack(amount);
-        int room = tank.fill(storageSide(), preview, false);
-        if (room <= 0) {
-            room = tank.fill(ForgeDirection.UNKNOWN, preview, false);
-        }
-        return room >= amount;
+        return amount > 0 && roomFor(fluid, amount) >= amount;
     }
 
-    /** How much of this fluid the tank still takes, counting no further than {@code max}. */
+    /**
+     * How much of this fluid the tank still takes, counting no further than {@code max}, after the deliveries already on
+     * their way here. The tank itself only knows what it holds now, so two senders asking one after the other would
+     * otherwise both be told the same room, and the second delivery would bounce.
+     * <p>
+     * A tank that holds a single fluid (most do) can't take a different fluid at all while one is on its way: an empty
+     * one says yes to anything, but only the first fluid to arrive will fit.
+     */
     public int roomFor(FluidIdentifier fluid, int max) {
         IFluidHandler tank = getTank();
         if (tank == null || fluid == null || max <= 0) {
             return 0;
         }
-        FluidStack preview = fluid.makeFluidStack(max);
+        expireReservations();
+        if (!holdsSeveralFluids(tank) && hasIncomingOtherThan(fluid)) {
+            return 0;
+        }
+        int pending = incomingOf(fluid);
+        FluidStack preview = fluid.makeFluidStack((int) Math.min(Integer.MAX_VALUE, (long) max + pending));
         int room = tank.fill(storageSide(), preview, false);
         if (room <= 0) {
             room = tank.fill(ForgeDirection.UNKNOWN, preview, false);
         }
-        return Math.max(0, Math.min(max, room));
+        return Math.max(0, Math.min(max, room - pending));
+    }
+
+    /* Room promised to deliveries still in the pipes */
+
+    /**
+     * How long room stays promised to a delivery that hasn't arrived. A container lost on the way never arrives, and
+     * without a limit its room would stay taken for good. A minute is far longer than any route takes.
+     */
+    private static final long RESERVATION_TIMEOUT_TICKS = 1200;
+
+    private static final class Incoming {
+
+        final FluidIdentifier fluid;
+        int amount;
+        final long expires;
+
+        Incoming(FluidIdentifier fluid, int amount, long expires) {
+            this.fluid = fluid;
+            this.amount = amount;
+            this.expires = expires;
+        }
+    }
+
+    /** Oldest first. In memory only: after a restart nothing is on its way any more. */
+    private final List<Incoming> incoming = new ArrayList<>();
+
+    /** A sender is routing this much fluid here; keep room for it until it arrives. */
+    public void reserve(FluidIdentifier fluid, int amount) {
+        if (fluid != null && amount > 0) {
+            incoming.add(new Incoming(fluid, amount, now() + RESERVATION_TIMEOUT_TICKS));
+        }
+    }
+
+    /** A delivery got here (stored or not): the room it was promised is no longer promised. */
+    private void releaseReservation(FluidIdentifier fluid, int amount) {
+        Iterator<Incoming> it = incoming.iterator();
+        while (it.hasNext() && amount > 0) {
+            Incoming entry = it.next();
+            if (!entry.fluid.equals(fluid)) {
+                continue;
+            }
+            int take = Math.min(amount, entry.amount);
+            entry.amount -= take;
+            amount -= take;
+            if (entry.amount <= 0) {
+                it.remove();
+            }
+        }
+    }
+
+    private void expireReservations() {
+        long t = now();
+        incoming.removeIf(entry -> entry.expires <= t);
+    }
+
+    private int incomingOf(FluidIdentifier fluid) {
+        int total = 0;
+        for (Incoming entry : incoming) {
+            if (entry.fluid.equals(fluid)) {
+                total += entry.amount;
+            }
+        }
+        return total;
+    }
+
+    private boolean hasIncomingOtherThan(FluidIdentifier fluid) {
+        for (Incoming entry : incoming) {
+            if (!entry.fluid.equals(fluid)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether the tank reports more than one internal tank, i.e. can hold several fluids side by side. */
+    private boolean holdsSeveralFluids(IFluidHandler tank) {
+        FluidTankInfo[] tanks = tank.getTankInfo(storageSide());
+        if (tanks == null || tanks.length == 0) {
+            tanks = tank.getTankInfo(ForgeDirection.UNKNOWN);
+        }
+        return tanks != null && tanks.length > 1;
+    }
+
+    private long now() {
+        World world = _world == null ? null : _world.getWorld();
+        return world == null ? 0 : world.getTotalWorldTime();
     }
 
     /** A loaded buffer that can still take this much of this fluid, or null when none of them can. */
@@ -197,6 +289,9 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
             return false;
         }
         FluidIdentifier fid = FluidIdentifier.get(fluid);
+        if (fid != null) {
+            releaseReservation(fid, fluid.amount);
+        }
         // Not for this buffer: another module in the same chassis, if any, may still want it.
         if (fid == null || !isOwed(fid)) {
             return false;
@@ -216,6 +311,9 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
             FluidStack rejected = fluid.copy();
             rejected.amount = fluid.amount - filled;
             sendFluidBack(rejected);
+            // Crafters were credited for all of it, but this part is on its way back to storage and nothing would ever
+            // fetch it: take that much credit back and have it asked for again, or the set waits for ever.
+            uncreditBounced(fid, rejected.amount);
         }
         if (filled > 0) {
             for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
@@ -288,6 +386,21 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
      */
     private static boolean isOwed(FluidIdentifier fluid) {
         return creditFor(fluid) > stockInAllBuffers(fluid);
+    }
+
+    /**
+     * Part of a delivery didn't fit. Only credit that no stock stands behind is taken back, since the pool is shared and
+     * the stock may still cover it; it is taken from whichever crafters hold credit for the fluid, as the pool doesn't
+     * say whose delivery it was. Each of them asks for what it lost again.
+     */
+    private static void uncreditBounced(FluidIdentifier fluid, int amount) {
+        int unbacked = Math.min(amount, creditFor(fluid) - stockInAllBuffers(fluid));
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (unbacked <= 0) {
+                return;
+            }
+            unbacked -= crafter.fluidBufferDeliveryBounced(fluid, unbacked);
+        }
     }
 
     /** How much of a fluid all loaded Smart Crafters together have credit for. */

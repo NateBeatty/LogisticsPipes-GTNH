@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -62,6 +63,7 @@ import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.FluidLogisticsPromise;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
+import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
@@ -72,6 +74,7 @@ import logisticspipes.routing.order.LogisticsOrderManager;
 import logisticspipes.utils.AdjacentTile;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.FluidDisplayUtil;
+import logisticspipes.utils.DelayedGeneric;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.OutputPushUtil;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
@@ -311,6 +314,35 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         buffered[slot] += amount;
         gateDirty = true;
+    }
+
+    /**
+     * Items sent to a buffer for this module never got there (lost, or didn't fit). Takes up to {@code max} of this
+     * module's credit for the item back, since no stock stands behind it, and asks for that many again through the
+     * crafter's lost-item queue, tagged with the slot so the gate tracks them as usual.
+     *
+     * @return how much credit was taken back
+     */
+    public int itemBufferDeliveryLost(ItemIdentifier item, int max) {
+        int taken = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
+            ItemIdentifierStack material = getMaterials(slot);
+            if (buffered[slot] <= 0 || material == null || !material.getItem().equals(item)) {
+                continue;
+            }
+            int take = Math.min(max - taken, buffered[slot]);
+            buffered[slot] -= take;
+            taken += take;
+            // Which request it was for is not known here; the re-request runs as a job of its own.
+            _lostItems.add(
+                    new DelayedGeneric<>(
+                            new LostItem(item.makeStack(take), new CraftingChassieInformation(slot, getPositionInt()), null),
+                            5000));
+        }
+        if (taken > 0) {
+            gateDirty = true;
+        }
+        return taken;
     }
 
     /**
@@ -739,15 +771,18 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // consumer is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and move
         // on to the next order, so one consumer that can't take anything doesn't hold up the others.
         if (wanted <= 0 && consumer instanceof ModuleSmartCrafter) {
-            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, maxSend);
+            // Room for any of it is enough, the rest follows on later passes: waiting for room for the whole chunk
+            // could wait for ever on a small or part-filled tank, while the consumer waits for this very fluid.
+            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, 1);
             if (buffer == null) {
                 getFluidOrders().deferSend();
                 return;
             }
-            FluidStack drained = drainFromTank(tank, fluid, maxSend, drainSide);
+            FluidStack drained = drainFromTank(tank, fluid, buffer.roomFor(fluid, maxSend), drainSide);
             if (drained == null || drained.amount <= 0) {
                 return;
             }
+            buffer.reserve(fluid, drained.amount);
             ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(drained);
             IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container);
             item.setDestination(buffer.getBufferRouter());
@@ -946,8 +981,106 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     @Override
     public void sendFailed(FluidIdentifier value1, Integer value2) {
-        // A delivery that never arrived. Nothing is reserved for fluids, so the next gate update simply asks again.
+        // A provider couldn't send it (its tanks ran dry). Nothing else would ever ask again, and the set would wait for
+        // ever with the rest of its ingredients delivered, so it is asked for again shortly, like a lost item.
         gateDirty = true;
+        if (CraftingJobs.currentIsCancelled()) {
+            return;
+        }
+        queueLostFluid(value1, value2 == null ? 0 : value2, CraftingJobs.current());
+    }
+
+    /**
+     * Part of a fluid delivery to a buffer didn't fit and went back to storage. Takes up to {@code max} of this
+     * module's credit for that fluid back, since no stock stands behind it, and asks for that much again.
+     *
+     * @return how much credit was taken back
+     */
+    public int fluidBufferDeliveryBounced(FluidIdentifier fluid, int max) {
+        int taken = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
+            if (fluidBuffered[slot] <= 0 || !isBufferableFluidSlot(slot) || !fluid.equals(getFluidIngredient(slot))) {
+                continue;
+            }
+            int take = Math.min(max - taken, fluidBuffered[slot]);
+            fluidBuffered[slot] -= take;
+            taken += take;
+        }
+        if (taken > 0) {
+            // Which request it was for is not known here; the re-request runs as a job of its own.
+            queueLostFluid(fluid, taken, null);
+            gateDirty = true;
+        }
+        return taken;
+    }
+
+    /** How long a lost fluid delivery waits before it is asked for again, giving its source time to refill. */
+    private static final int LOST_FLUID_RETRY_TICKS = 100;
+
+    /** Fluid deliveries that never arrived and are still to be asked for again. In memory only, like the orders. */
+    private final List<LostFluid> lostFluids = new ArrayList<>();
+
+    private static final class LostFluid {
+
+        final FluidIdentifier fluid;
+        int amount;
+        /** The request it was for, which the re-request joins; null if it isn't known. */
+        final CraftingJob job;
+        long retryAt;
+
+        LostFluid(FluidIdentifier fluid, int amount, CraftingJob job, long retryAt) {
+            this.fluid = fluid;
+            this.amount = amount;
+            this.job = job;
+            this.retryAt = retryAt;
+        }
+    }
+
+    private void queueLostFluid(FluidIdentifier fluid, int amount, CraftingJob job) {
+        if (fluid != null && amount > 0) {
+            lostFluids.add(new LostFluid(fluid, amount, job, now() + LOST_FLUID_RETRY_TICKS));
+        }
+    }
+
+    /**
+     * Asks again for the fluid deliveries that never arrived. Dropped for a cancelled job; a finished one is asked for
+     * under a job of its own, since the job may have finished on another job's ingredients and left this set short.
+     */
+    private void retryLostFluids() {
+        if (lostFluids.isEmpty()) {
+            return;
+        }
+        long t = now();
+        Iterator<LostFluid> it = lostFluids.iterator();
+        while (it.hasNext()) {
+            LostFluid lost = it.next();
+            if (t < lost.retryAt) {
+                continue;
+            }
+            if (lost.job != null && lost.job.isCancelled()) {
+                it.remove();
+                continue;
+            }
+            CraftingJob job = lost.job != null && lost.job.isDone() ? null : lost.job;
+            if (job == null && !recipeHasWork()) {
+                // Nothing left here to use it for: it would only come back as an orphan.
+                it.remove();
+                continue;
+            }
+            int received;
+            CraftingJob previous = CraftingJobs.enter(job);
+            try {
+                received = RequestTree.requestFluidPartial(lost.fluid, lost.amount, this, null);
+            } finally {
+                CraftingJobs.exit(previous);
+            }
+            if (received >= lost.amount) {
+                it.remove();
+            } else {
+                lost.amount -= Math.max(0, received);
+                lost.retryAt = t + LOST_FLUID_RETRY_TICKS * 4;
+            }
+        }
     }
 
     /** Whether this ingredient slot holds a fluid. Fluids are delivered to a fluid satellite, never to the chassis. */
@@ -1761,6 +1894,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (_service == null || !MainProxy.isServer(getWorld())) {
             return;
         }
+        retryLostFluids();
         if (claimedMachine != null && _service.isNthTick(CLAIM_REFRESH_TICKS)) {
             if (claimedMachine.equals(machineKey())) {
                 MachineClaims.refresh(claimedMachine, this, now());
