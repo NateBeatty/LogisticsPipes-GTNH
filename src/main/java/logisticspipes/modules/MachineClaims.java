@@ -1,9 +1,11 @@
 package logisticspipes.modules;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -86,6 +88,22 @@ final class MachineClaims {
             }
         }
         return false;
+    }
+
+    /** The loaded crafters in line for this machine, oldest first, leaving out the one asking. */
+    static List<ModuleSmartCrafter> waiters(Key machine, ModuleSmartCrafter crafter) {
+        List<ModuleSmartCrafter> list = new ArrayList<>();
+        Claim claim = CLAIMS.get(machine);
+        if (claim == null) {
+            return list;
+        }
+        for (WeakReference<ModuleSmartCrafter> ref : claim.waiters) {
+            ModuleSmartCrafter waiter = ref.get();
+            if (waiter != null && waiter != crafter) {
+                list.add(waiter);
+            }
+        }
+        return list;
     }
 
     /** How many loaded crafters are in line for this machine, not counting the one holding it. */

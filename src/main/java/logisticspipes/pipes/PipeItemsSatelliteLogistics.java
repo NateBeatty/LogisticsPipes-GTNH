@@ -352,10 +352,14 @@ public class PipeItemsSatelliteLogistics extends CoreRoutedPipe
             Pair<ItemIdentifierStack, CraftingJob> lost = iterator.next();
             ItemIdentifierStack stack = lost.getValue1();
             CraftingJob job = lost.getValue2();
-            if (job != null && (job.isCancelled() || job.isDone())) {
+            if (job != null && job.isCancelled()) {
                 // The request it was for is gone: asking again would only bring items nobody wants.
                 iterator.remove();
                 continue;
+            }
+            if (job != null && job.isDone()) {
+                // Finished, possibly on another job's items (see ModuleCrafter#tick): ask again under a job of its own.
+                job = null;
             }
             int received;
             CraftingJob previous = CraftingJobs.enter(job);

@@ -1,8 +1,11 @@
 package logisticspipes.modules;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -11,6 +14,7 @@ import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.IIcon;
+import net.minecraft.world.World;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
@@ -121,13 +125,29 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
      */
     @Override
     public void itemArrived(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        releaseReservation(item.getItem(), item.getStackSize());
         for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
             crafter.onBufferStockArrived(item.getItem());
         }
     }
 
+    /**
+     * Something sent here won't arrive: it was lost on the way, or didn't fit and went elsewhere. Crafters were credited
+     * for it, so whatever credit no stock stands behind any more is taken back and asked for again; otherwise the set
+     * would wait for items that are now in storage, with nothing to fetch them.
+     */
     @Override
-    public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {}
+    public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        ItemIdentifier id = item.getItem();
+        releaseReservation(id, item.getStackSize());
+        int unbacked = Math.min(item.getStackSize(), creditFor(id) - stockInAllBuffers(id));
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (unbacked <= 0) {
+                return;
+            }
+            unbacked -= crafter.itemBufferDeliveryLost(id, unbacked);
+        }
+    }
 
     /** The chest this module faces, or null when it isn't pointed at one. */
     public IInventory getBufferInventory() {
@@ -142,8 +162,111 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
 
     /** Whether there is space for this item, which decides if an intermediate may be routed here. */
     public boolean hasRoomFor(ItemIdentifier item, int count) {
+        return count > 0 && roomFor(item, count) >= count;
+    }
+
+    /**
+     * How many of an item the chest still takes, counting no further than {@code max}, after what is already on its way
+     * here. The chest only knows what it holds now, so two senders asking one after the other would otherwise both be
+     * told the same room. Other items on their way are counted as the slots they will fill, each slot as a full stack
+     * of this item: a little cautious when they top up partial stacks, never too generous.
+     */
+    public int roomFor(ItemIdentifier item, int max) {
         IInventoryUtil inv = inventory();
-        return inv != null && inv.roomForItem(item, count) >= count;
+        if (inv == null || item == null || max <= 0) {
+            return 0;
+        }
+        expireReservations();
+        int pending = 0;
+        int otherSlots = 0;
+        for (Incoming entry : incoming) {
+            if (entry.item.equals(item)) {
+                pending += entry.count;
+            } else {
+                int stack = Math.max(1, entry.item.getMaxStackSize());
+                otherSlots += (entry.count + stack - 1) / stack;
+            }
+        }
+        long held = (long) pending + (long) otherSlots * Math.max(1, item.getMaxStackSize());
+        int ask = (int) Math.min(Integer.MAX_VALUE, max + held);
+        return Math.max(0, (int) Math.min(max, inv.roomForItem(item, ask) - held));
+    }
+
+    /* Room promised to deliveries still in the pipes */
+
+    /** How long room stays promised to a delivery that hasn't arrived and wasn't reported lost. */
+    private static final long RESERVATION_TIMEOUT_TICKS = 1200;
+
+    private static final class Incoming {
+
+        final ItemIdentifier item;
+        int count;
+        final long expires;
+
+        Incoming(ItemIdentifier item, int count, long expires) {
+            this.item = item;
+            this.count = count;
+            this.expires = expires;
+        }
+    }
+
+    /** Oldest first. In memory only: after a restart nothing is on its way any more. */
+    private final List<Incoming> incoming = new ArrayList<>();
+
+    /** A sender is routing these items here; keep room for them until they arrive. */
+    public void reserve(ItemIdentifier item, int count) {
+        if (item != null && count > 0) {
+            incoming.add(new Incoming(item, count, now() + RESERVATION_TIMEOUT_TICKS));
+        }
+    }
+
+    private void releaseReservation(ItemIdentifier item, int count) {
+        Iterator<Incoming> it = incoming.iterator();
+        while (it.hasNext() && count > 0) {
+            Incoming entry = it.next();
+            if (!entry.item.equals(item)) {
+                continue;
+            }
+            int take = Math.min(count, entry.count);
+            entry.count -= take;
+            count -= take;
+            if (entry.count <= 0) {
+                it.remove();
+            }
+        }
+    }
+
+    private void expireReservations() {
+        long t = now();
+        incoming.removeIf(entry -> entry.expires <= t);
+    }
+
+    private long now() {
+        World world = _world == null ? null : _world.getWorld();
+        return world == null ? 0 : world.getTotalWorldTime();
+    }
+
+    /**
+     * The chassis router this module sits in. A provider parking raw materials here sends them to it directly, so they
+     * land in this chest whatever else the network's sinks would say.
+     */
+    public int getBufferRouter() {
+        return _service == null || _service.getRouter() == null ? -1 : _service.getRouter().getSimpleID();
+    }
+
+    /** What an item sent here directly carries, so the chassis reports its arrival to this module. */
+    public IAdditionalTargetInformation getTargetInformation() {
+        return new ChassiTargetInformation(getPositionInt());
+    }
+
+    /** A loaded buffer with room for at least one of this item, or null when none has. */
+    public static ModuleCraftingBuffer withRoomFor(ItemIdentifier item) {
+        for (ModuleCraftingBuffer buffer : AllBuffers) {
+            if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(item, 1)) {
+                return buffer;
+            }
+        }
+        return null;
     }
 
     /**

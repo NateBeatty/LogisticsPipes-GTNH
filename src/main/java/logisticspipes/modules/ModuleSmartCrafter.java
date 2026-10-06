@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -65,6 +66,7 @@ import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.FluidLogisticsPromise;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
+import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
@@ -75,6 +77,7 @@ import logisticspipes.routing.order.LogisticsOrderManager;
 import logisticspipes.utils.AdjacentTile;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.FluidDisplayUtil;
+import logisticspipes.utils.DelayedGeneric;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.OutputPushUtil;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
@@ -329,6 +332,53 @@ public class ModuleSmartCrafter extends ModuleCrafter
         gateDirty = true;
     }
 
+    /**
+     * Items sent to a buffer for this module never got there (lost, or didn't fit). Takes up to {@code max} of this
+     * module's credit for the item back, since no stock stands behind it, and asks for that many again through the
+     * crafter's lost-item queue, tagged with the slot so the gate tracks them as usual.
+     *
+     * @return how much credit was taken back
+     */
+    public int itemBufferDeliveryLost(ItemIdentifier item, int max) {
+        int taken = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
+            ItemIdentifierStack material = getMaterials(slot);
+            if (buffered[slot] <= 0 || material == null || !material.getItem().equals(item)) {
+                continue;
+            }
+            int take = Math.min(max - taken, buffered[slot]);
+            buffered[slot] -= take;
+            taken += take;
+            // Which request it was for is not known here; the re-request runs as a job of its own.
+            _lostItems.add(
+                    new DelayedGeneric<>(
+                            new LostItem(item.makeStack(take), new CraftingChassieInformation(slot, getPositionInt()), null),
+                            5000));
+        }
+        if (taken > 0) {
+            gateDirty = true;
+        }
+        return taken;
+    }
+
+    /**
+     * For a provider about to send an ingredient: the crafting buffer to park it in because the Smart Crafter it is for
+     * has its gate shut, or null to send it as usual (not a gated Smart Crafter slot, gate open, or no buffer has room).
+     * The provider credits the crafter with {@link #creditBuffered} for what it sends there.
+     */
+    public static ModuleCraftingBuffer bufferForShutGate(IGatedItemSink gate, ItemIdentifier item,
+            IAdditionalTargetInformation info) {
+        if (!(gate instanceof ModuleSmartCrafter)) {
+            return null;
+        }
+        ModuleSmartCrafter crafter = (ModuleSmartCrafter) gate;
+        int slot = ingredientSlot(info);
+        if (slot < 0 || !crafter.isGatedSlot(slot) || crafter.allowance[slot] > 0) {
+            return null;
+        }
+        return ModuleCraftingBuffer.withRoomFor(item);
+    }
+
     /** What this module may take from the buffers for a slot right now: its credit, as far as the stock goes. */
     private int bufferedFor(int slot) {
         if (buffered[slot] <= 0) {
@@ -563,12 +613,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /** A fluid buffer that can still take at least this much of this fluid, or null when none of them can. */
     private ModuleFluidCraftingBuffer fluidBufferWithRoomFor(FluidIdentifier fluid, int amount) {
-        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.AllBuffers) {
-            if (buffer.hasRoomFor(fluid, amount)) {
-                return buffer;
-            }
-        }
-        return null;
+        return ModuleFluidCraftingBuffer.withRoomFor(fluid, amount);
     }
 
     /* Fluid ingredients */
@@ -739,17 +784,21 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
         // Gate shut (machine full, or nothing released yet): park what we can in a fluid buffer and credit the consumer
         // for it, so it is owed exactly what we send and pulls it back once the machine has room. Only a Smart Crafter
-        // consumer is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and try
-        // again next tick.
+        // consumer is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and move
+        // on to the next order, so one consumer that can't take anything doesn't hold up the others.
         if (wanted <= 0 && consumer instanceof ModuleSmartCrafter) {
-            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, maxSend);
+            // Room for any of it is enough, the rest follows on later passes: waiting for room for the whole chunk
+            // could wait for ever on a small or part-filled tank, while the consumer waits for this very fluid.
+            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, 1);
             if (buffer == null) {
+                getFluidOrders().deferSend();
                 return;
             }
-            FluidStack drained = drainFromTank(tank, fluid, maxSend, drainSide);
+            FluidStack drained = drainFromTank(tank, fluid, buffer.roomFor(fluid, maxSend), drainSide);
             if (drained == null || drained.amount <= 0) {
                 return;
             }
+            buffer.reserve(fluid, drained.amount);
             ItemIdentifierStack container = SimpleServiceLocator.logisticsFluidManager.getFluidContainer(drained);
             IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(container);
             item.setDestination(buffer.getBufferRouter());
@@ -948,8 +997,106 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     @Override
     public void sendFailed(FluidIdentifier value1, Integer value2) {
-        // A delivery that never arrived. Nothing is reserved for fluids, so the next gate update simply asks again.
+        // A provider couldn't send it (its tanks ran dry). Nothing else would ever ask again, and the set would wait for
+        // ever with the rest of its ingredients delivered, so it is asked for again shortly, like a lost item.
         gateDirty = true;
+        if (CraftingJobs.currentIsCancelled()) {
+            return;
+        }
+        queueLostFluid(value1, value2 == null ? 0 : value2, CraftingJobs.current());
+    }
+
+    /**
+     * Part of a fluid delivery to a buffer didn't fit and went back to storage. Takes up to {@code max} of this
+     * module's credit for that fluid back, since no stock stands behind it, and asks for that much again.
+     *
+     * @return how much credit was taken back
+     */
+    public int fluidBufferDeliveryBounced(FluidIdentifier fluid, int max) {
+        int taken = 0;
+        for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
+            if (fluidBuffered[slot] <= 0 || !isBufferableFluidSlot(slot) || !fluid.equals(getFluidIngredient(slot))) {
+                continue;
+            }
+            int take = Math.min(max - taken, fluidBuffered[slot]);
+            fluidBuffered[slot] -= take;
+            taken += take;
+        }
+        if (taken > 0) {
+            // Which request it was for is not known here; the re-request runs as a job of its own.
+            queueLostFluid(fluid, taken, null);
+            gateDirty = true;
+        }
+        return taken;
+    }
+
+    /** How long a lost fluid delivery waits before it is asked for again, giving its source time to refill. */
+    private static final int LOST_FLUID_RETRY_TICKS = 100;
+
+    /** Fluid deliveries that never arrived and are still to be asked for again. In memory only, like the orders. */
+    private final List<LostFluid> lostFluids = new ArrayList<>();
+
+    private static final class LostFluid {
+
+        final FluidIdentifier fluid;
+        int amount;
+        /** The request it was for, which the re-request joins; null if it isn't known. */
+        final CraftingJob job;
+        long retryAt;
+
+        LostFluid(FluidIdentifier fluid, int amount, CraftingJob job, long retryAt) {
+            this.fluid = fluid;
+            this.amount = amount;
+            this.job = job;
+            this.retryAt = retryAt;
+        }
+    }
+
+    private void queueLostFluid(FluidIdentifier fluid, int amount, CraftingJob job) {
+        if (fluid != null && amount > 0) {
+            lostFluids.add(new LostFluid(fluid, amount, job, now() + LOST_FLUID_RETRY_TICKS));
+        }
+    }
+
+    /**
+     * Asks again for the fluid deliveries that never arrived. Dropped for a cancelled job; a finished one is asked for
+     * under a job of its own, since the job may have finished on another job's ingredients and left this set short.
+     */
+    private void retryLostFluids() {
+        if (lostFluids.isEmpty()) {
+            return;
+        }
+        long t = now();
+        Iterator<LostFluid> it = lostFluids.iterator();
+        while (it.hasNext()) {
+            LostFluid lost = it.next();
+            if (t < lost.retryAt) {
+                continue;
+            }
+            if (lost.job != null && lost.job.isCancelled()) {
+                it.remove();
+                continue;
+            }
+            CraftingJob job = lost.job != null && lost.job.isDone() ? null : lost.job;
+            if (job == null && !recipeHasWork()) {
+                // Nothing left here to use it for: it would only come back as an orphan.
+                it.remove();
+                continue;
+            }
+            int received;
+            CraftingJob previous = CraftingJobs.enter(job);
+            try {
+                received = RequestTree.requestFluidPartial(lost.fluid, lost.amount, this, null);
+            } finally {
+                CraftingJobs.exit(previous);
+            }
+            if (received >= lost.amount) {
+                it.remove();
+            } else {
+                lost.amount -= Math.max(0, received);
+                lost.retryAt = t + LOST_FLUID_RETRY_TICKS * 4;
+            }
+        }
     }
 
     /** Whether this ingredient slot holds a fluid. Fluids are delivered to a fluid satellite, never to the chassis. */
@@ -1881,6 +2028,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (_service == null || !MainProxy.isServer(getWorld())) {
             return;
         }
+        retryLostFluids();
         if (claimedMachine != null && _service.isNthTick(CLAIM_REFRESH_TICKS)) {
             if (claimedMachine.equals(machineKey())) {
                 MachineClaims.refresh(claimedMachine, this, now());
@@ -2468,12 +2616,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
             releaseClaim();
             gateDirty = true; // queue up again behind the crafter that is waiting
-        } else if (claimedMachine != null && isBlockedWaitingForIngredients()
-                && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
-                    // Holding the machine and getting nothing, while someone else wants it. The allowance goes back
-                    // too, so
-                    // providers stop sending into a machine this module no longer owns. Without this a crafter whose
-                    // ingredient can only come from the very crafter it is blocking would hold on for ever.
+        } else if (claimedMachine != null && isBlockedWaitingForIngredients() && waiterMakesMissingIngredient()) {
+                    // Holding the machine and getting nothing, while the crafter that would make the missing
+                    // ingredient waits for this very machine. The allowance goes back too, so providers stop sending
+                    // into a machine this module no longer owns. Without this the two would wait on each other for
+                    // ever. Only then: giving the machine up for any other reason leaves this set's delivered
+                    // ingredients inside while the next crafter loads its own, i.e. two recipes in one machine. A set
+                    // whose ingredient is merely stuck at its source keeps the machine and waits, which shows in the
+                    // Request Table instead of quietly mixing recipes.
                     for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
                         allowance[slot] = 0;
                     }
@@ -2486,8 +2636,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * Whether every ingredient that <b>another crafter is still making</b> is already on hand: in a buffer, on its way
-     * here, or sitting in the machine. Raw materials are taken on trust, because the planner already found a source for
-     * them and a provider only sends once the gate opens - waiting for those would deadlock against ourselves.
+     * here, or sitting in the machine. Raw materials are held to the same rule whenever a buffer has room for them,
+     * because then a provider parks them there while the gate is shut ({@link #bufferForShutGate}), so they do turn up
+     * without the gate opening. Only when no buffer can take them are they taken on trust, as before buffers existed:
+     * the planner already found a source, and a provider that has nowhere to park them only sends once the gate opens,
+     * so waiting for them would deadlock against ourselves.
+     * <p>
+     * Waiting for the whole set before claiming is what keeps a crafter from holding the machine, part-loaded, while
+     * one ingredient is still stuck at its source - which is how two recipes ended up in one machine: after a while the
+     * crafter gave the machine up mid-job, with its delivered ingredients still inside.
      * <p>
      * This is what stops a crafter seizing a machine on the strength of having an order. Two recipes on one machine,
      * where one makes the other's ingredient, used to deadlock outright: the second crafter claimed the machine,
@@ -2501,7 +2658,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             ItemIdentifierStack material = getMaterials(slot);
             ItemIdentifier item = material.getItem();
-            if (!isBeingCraftedByAnother(item)) {
+            if (!isBeingCraftedByAnother(item) && !rawWillBeBuffered(item)) {
                 continue;
             }
             int onHand = inFlight[slot] + bufferedFor(slot) + machineStock(item);
@@ -2524,7 +2681,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
-            if (!isFluidBeingCraftedByAnother(fluid)) {
+            if (!isFluidBeingCraftedByAnother(fluid)
+                    && !(advancedSatelliteIdArray[slot] == 0 && rawFluidWillBeBuffered(fluid))) {
                 continue;
             }
             int onHand;
@@ -2683,6 +2841,19 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
+    /**
+     * Whether a raw item ingredient will be parked in a crafting buffer while the gate is shut, i.e. some buffer has
+     * room for it. Mirrors the provider's side of {@link #bufferForShutGate}, so the two agree on when to wait.
+     */
+    private static boolean rawWillBeBuffered(ItemIdentifier item) {
+        return ModuleCraftingBuffer.withRoomFor(item) != null;
+    }
+
+    /** The fluid twin of {@link #rawWillBeBuffered}, matching {@code PipeFluidProvider}'s choice of buffer. */
+    private static boolean rawFluidWillBeBuffered(FluidIdentifier fluid) {
+        return fluid != null && ModuleFluidCraftingBuffer.withRoomFor(fluid, 1) != null;
+    }
+
     private int bufferStock(ItemIdentifier item) {
         int total = 0;
         for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
@@ -2770,6 +2941,64 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         setsReleased = 0;
         clearResultProgress();
+    }
+
+    /**
+     * Whether a crafter in line for this module's machine makes an ingredient the released set is still short of. That
+     * is the one case where holding on can never end: the ingredient can only be made in the machine this module holds.
+     */
+    private boolean waiterMakesMissingIngredient() {
+        List<ModuleSmartCrafter> waiters = MachineClaims.waiters(claimedMachine, this);
+        if (waiters.isEmpty()) {
+            return false;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isFluidSlot(slot)) {
+                FluidIdentifier fluid = getFluidIngredient(slot);
+                if (fluid == null || fluidSlotOnHand(slot, fluid) >= fluidAmount[slot]) {
+                    continue;
+                }
+                for (ModuleSmartCrafter waiter : waiters) {
+                    if (waiter.fluidResultSlot(fluid) >= 0) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            ItemIdentifierStack material = getMaterials(slot);
+            if (material == null || material.getStackSize() <= 0
+                    || itemSlotOnHand(slot, material.getItem()) >= material.getStackSize()) {
+                continue;
+            }
+            for (ModuleSmartCrafter waiter : waiters) {
+                for (ItemIdentifierStack result : waiter.getConfiguredCraftResults()) {
+                    if (result.getItem().equals(material.getItem())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * How much of an item slot's ingredient is on hand for it. A slot bound to a satellite is read from that satellite's
+     * machine; one that can't be read counts as missing, so the deadlock check errs towards handing over.
+     */
+    private int itemSlotOnHand(int slot, ItemIdentifier item) {
+        if (advancedSatelliteIdArray[slot] != 0) {
+            return Math.max(0, itemsInSatelliteMachine(slot, item));
+        }
+        return inFlight[slot] + bufferedFor(slot) + machineStock(item);
+    }
+
+    /** The fluid twin of {@link #itemSlotOnHand}. */
+    private int fluidSlotOnHand(int slot, FluidIdentifier fluid) {
+        if (advancedSatelliteIdArray[slot] != 0) {
+            return Math.max(0, heldInSatelliteMachine(slot, fluid));
+        }
+        IFluidHandler tank = facedTank();
+        return inFlight[slot] + fluidBufferedFor(slot) + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
     }
 
     /** Sets are out, nothing is on its way, and nothing has happened for a while: the ingredients are not coming. */

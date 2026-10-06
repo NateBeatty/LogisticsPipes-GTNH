@@ -37,7 +37,9 @@ import logisticspipes.logistics.LogisticsManager;
 import logisticspipes.logisticspipes.ExtractionMode;
 import logisticspipes.logisticspipes.IRoutedItem;
 import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
+import logisticspipes.modules.ModuleCraftingBuffer;
 import logisticspipes.modules.ModuleProvider;
+import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.network.GuiIDs;
 import logisticspipes.network.PacketHandler;
@@ -174,28 +176,39 @@ public class PipeItemsProviderLogistics extends CoreRoutedPipe implements IProvi
                 _orderManager.sendFailed();
                 return 0;
             }
-            SinkReply reply = LogisticsManager.canSink(dRtr, null, true, stack.getItem(), null, true, false);
-            boolean defersend = false;
-            if (reply != null) { // some pipes are not aware of the space in the adjacent inventory, so they return null
-                if (reply.maxNumberOfItems < wanted) {
-                    wanted = reply.maxNumberOfItems;
-                    if (wanted <= 0) {
-                        _orderManager.deferSend();
-                        return 0;
-                    }
-                    defersend = true;
-                }
-            }
             IGatedItemSink gate = IGatedItemSink.findTarget(dRtr, info);
-            if (gate != null) {
-                int allowed = gate.getGatedAllowance(item, info);
-                if (allowed < wanted) {
-                    wanted = allowed;
-                    if (wanted <= 0) {
-                        _orderManager.deferSend();
-                        return 0;
+            boolean defersend = false;
+            // A shut Smart Crafter gate parks the raw materials in a crafting buffer, as the Provider Module does.
+            ModuleCraftingBuffer buffer = ModuleSmartCrafter.bufferForShutGate(gate, item, info);
+            if (buffer != null) {
+                wanted = buffer.roomFor(item, wanted);
+                if (wanted <= 0) {
+                    _orderManager.deferSend();
+                    return 0;
+                }
+            } else {
+                SinkReply reply = LogisticsManager.canSink(dRtr, null, true, stack.getItem(), null, true, false);
+                // some pipes are not aware of the space in the adjacent inventory, so they return null
+                if (reply != null) {
+                    if (reply.maxNumberOfItems < wanted) {
+                        wanted = reply.maxNumberOfItems;
+                        if (wanted <= 0) {
+                            _orderManager.deferSend();
+                            return 0;
+                        }
+                        defersend = true;
                     }
-                    defersend = true;
+                }
+                if (gate != null) {
+                    int allowed = gate.getGatedAllowance(item, info);
+                    if (allowed < wanted) {
+                        wanted = allowed;
+                        if (wanted <= 0) {
+                            _orderManager.deferSend();
+                            return 0;
+                        }
+                        defersend = true;
+                    }
                 }
             }
             if (!canUseEnergy(wanted * neededEnergy())) {
@@ -209,13 +222,20 @@ public class PipeItemsProviderLogistics extends CoreRoutedPipe implements IProvi
             useEnergy(sent * neededEnergy());
 
             IRoutedItem routedItem = SimpleServiceLocator.routedItemHelper.createNewTravelItem(removed);
-            routedItem.setDestination(destination);
             routedItem.setTransportMode(TransportMode.Active);
-            routedItem.setAdditionalTargetInformation(info);
+            if (buffer != null) {
+                buffer.reserve(item, sent);
+                ((ModuleSmartCrafter) gate).creditBuffered(info, sent);
+                routedItem.setDestination(buffer.getBufferRouter());
+                routedItem.setAdditionalTargetInformation(buffer.getTargetInformation());
+            } else {
+                routedItem.setDestination(destination);
+                routedItem.setAdditionalTargetInformation(info);
+            }
             super.queueRoutedItem(routedItem, tile.orientation);
 
             _orderManager.sendSuccessfull(sent, defersend, routedItem);
-            if (gate != null) {
+            if (gate != null && buffer == null) {
                 gate.onGatedSend(item, sent, info);
             }
             return sent;

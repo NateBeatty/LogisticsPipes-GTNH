@@ -285,11 +285,14 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         int rerequested = 0;
         while (lostItem != null && rerequested < 100) {
             LostItem lost = lostItem.get();
-            if (lost.job != null && (lost.job.isCancelled() || lost.job.isDone())) {
+            if (lost.job != null && lost.job.isCancelled()) {
                 // The request it was for is gone: asking again would only make ingredients nobody wants.
                 lostItem = _lostItems.poll();
                 continue;
             }
+            // A finished job may still be owed it: crafters hand results to whichever order is first, so the job could
+            // have finished on another job's ingredients, leaving that job a set short. Ask again under a job of its own.
+            CraftingJob job = lost.job != null && lost.job.isDone() ? null : lost.job;
             if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING)) {
                 SinkReply reply = LogisticsManager
                         .canSink(getRouter(), null, true, lost.stack.getItem(), null, true, true);
@@ -300,7 +303,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 }
             }
             int received;
-            CraftingJob previous = CraftingJobs.enter(lost.job);
+            CraftingJob previous = CraftingJobs.enter(job);
             try {
                 received = RequestTree.requestPartial(lost.stack, (CoreRoutedPipe) _service, lost.info);
             } finally {
