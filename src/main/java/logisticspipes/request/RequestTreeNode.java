@@ -499,8 +499,11 @@ public class RequestTreeNode {
                 break; // we have everything we need for this crafting request
             }
 
-            // don't clear, because we might have under-requested, and need to consider these again
-            if (!craftersToBalance.isEmpty()) {
+            // don't clear, because we might have under-requested, and need to consider these again. Crafters of this
+            // priority that never got work are still waiting too: when the least busy one could take the whole request
+            // and then failed to plan it, the others were never pulled in, and stopping here would fail a request one
+            // of them could have made (a request for 1, say).
+            if (!craftersToBalance.isEmpty() || !craftersSamePriority.isEmpty()) {
                 done = false;
                 // craftersSamePriority.clear(); // we've extracted all we can from these priority crafters, and we
                 // still have more to do, back to the top to get the next priority level.
