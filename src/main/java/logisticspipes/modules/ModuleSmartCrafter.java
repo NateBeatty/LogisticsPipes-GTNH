@@ -116,11 +116,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private static final int SAFETY_NET_TICKS = 100;
     /** How often a held claim is refreshed. Must be well below {@link MachineClaims#CLAIM_TIMEOUT_TICKS}. */
     private static final int CLAIM_REFRESH_TICKS = 20;
-    /**
-     * Released sets are given up after this long with no progress, once everything was delivered and none of the
-     * ingredients are left in the machine. Covers results that never come back to this module.
-     */
-    private static final int STUCK_TICKS = 400;
     /** Upper limit on stacks pulled out in one sweep, so a huge leftover pile can't flood the network at once. */
     private static final int MAX_SWEEP_STACKS = 64;
     /** How often results no order is waiting for are cleared out of the machine. */
@@ -158,6 +153,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private boolean sweepBeforeRelease = false;
     /** Sets asked for through the gui's "Request set" button, which have no order behind them. */
     private int pendingManualSets = 0;
+    /**
+     * A "Request set" set was handed over and every one of its ingredients was found, so its allowance is still owed
+     * deliveries even when no order is left. Without this the gate would reset under it and strand them.
+     */
+    private boolean manualSetOut = false;
+    /** Whether the last "Request set" found every ingredient; a set missing one can't run and isn't waited for. */
+    private boolean manualSetComplete = false;
 
     /**
      * Litres per slot, ingredients and results alike, in the unit GT recipes and NEI use. Above zero means the slot
@@ -306,9 +308,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
     protected ResultRoute routeForResult(LogisticsItemOrder order) {
         ResultRoute route = super.routeForResult(order);
         resultHeld = route == ResultRoute.HOLD;
-        LogisticsPipes.log.info(
-                "[Buffer DEBUG] result " + order.getResource()
-                        .getItem() + " -> " + route + " (buffers=" + ModuleCraftingBuffer.AllBuffers.size() + ")");
         return route;
     }
 
@@ -428,20 +427,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (left <= 0) {
                 break;
             }
-            LogisticsPipes.log.info(
-                    "[Buffer DEBUG] pull slot " + slot
-                            + " want "
-                            + left
-                            + " of "
-                            + item
-                            + ", buffer holds "
-                            + buffer.getAvailable(item));
             int sent = buffer.sendTo(
                     item,
                     left,
                     getRouter().getSimpleID(),
                     new CraftingChassieInformation(slot, getPositionInt()));
-            LogisticsPipes.log.info("[Buffer DEBUG] pull sent " + sent);
             if (sent > 0) {
                 left -= sent;
                 buffered[slot] = Math.max(0, buffered[slot] - sent);
@@ -601,14 +591,36 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * the machine or bounced), so it is no longer in flight either way. Called on arrival.
      */
     private void onFluidDelivered(FluidIdentifier fluid, int amount) {
+        // A container carries no word of which module it was for, so the chassis hands it to the first module that
+        // wants the fluid. All of them pour into the same machine, so that part doesn't matter, but the in-flight count
+        // belongs to whichever one sent for it: take the amount off this module first, then off the other modules in
+        // this chassis that are waiting for it. Otherwise the sender's count never comes down, it never hands the
+        // machine over, and its later sets think the fluid is still coming.
+        int left = takeFluidInFlight(fluid, amount);
+        for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
+            if (left <= 0) {
+                return;
+            }
+            if (other != this && other._service != null && other._service == _service) {
+                left = other.takeFluidInFlight(fluid, left);
+            }
+        }
+    }
+
+    /** Counts up to {@code amount} of this fluid as arrived. @return the part this module wasn't waiting for */
+    private int takeFluidInFlight(FluidIdentifier fluid, int amount) {
         if (fluid == null || amount <= 0) {
-            return;
+            return 0;
         }
         int slot = fluidSlotFor(fluid);
-        if (slot < 0 || !isBufferableFluidSlot(slot)) {
-            return;
+        if (slot < 0 || !isBufferableFluidSlot(slot) || inFlight[slot] <= 0) {
+            return amount;
         }
-        inFlight[slot] = Math.max(0, inFlight[slot] - amount);
+        int take = Math.min(amount, inFlight[slot]);
+        inFlight[slot] -= take;
+        lastProgressTick = now();
+        gateDirty = true;
+        return amount - take;
     }
 
     /** A fluid buffer that can still take at least this much of this fluid, or null when none of them can. */
@@ -1812,6 +1824,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // check and machine claim included). Raising the allowance here instead would be undone by the next
         // updateGate: with no order behind this set it takes the "nothing to do" branch and resets the gate.
         pendingManualSets++;
+        manualSetComplete = satisfied == slots;
         int waitingBefore = pendingManualSets;
         // Run the gate now rather than on the next tick, so the answer below is what actually happened.
         updateGate();
@@ -2139,7 +2152,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (awaitedMachine != null) {
             return CrafterState.WAITING_FOR_MACHINE;
         }
-        if (waitingForIntermediatesSince != 0) {
+        // With sets out the crafter is working; waiting for the intermediates of the next sets isn't news yet.
+        if (waitingForIntermediatesSince != 0 && setsReleased == 0) {
             return CrafterState.WAITING_FOR_INTERMEDIATE;
         }
         if (isBlockedWaitingForIngredients()) {
@@ -2251,9 +2265,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * <p>
      * All modules in a chassis face the same machine and share one order queue, so whichever module's tick reaches an
      * order first extracts its result. Credit has to go to the recipe that made it: otherwise that recipe never sees
-     * its sets finish, its progress clock stands still, and after {@link #STUCK_TICKS} it thinks it is blocked and
-     * hands the machine over mid-job. Among recipes making the same item, the one holding the machine or with sets out
-     * wins.
+     * its sets finish and it never hands the machine back. Among recipes making the same item, the one holding the
+     * machine or with sets out wins.
      */
     private ModuleSmartCrafter resultOwner(ItemIdentifier item) {
         boolean ours = outputIndexFor(item) >= 0;
@@ -2542,7 +2555,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // Only an ordered job counts, so the end-of-job sweep above never fires for a set handed over by hand.
         hadOrders |= setsNeeded > 0;
         pendingLoadSweep = false; // the pre-craft sweep below covers it
-        giveUpStuckSets();
 
         int toRelease = Math.min(wanted, MAX_SETS_IN_FLIGHT) - setsReleased;
         if (toRelease > 0 && waitedLongEnoughForIntermediates() && mayReleaseSets()) {
@@ -2555,7 +2567,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 sweepAllRecipesOnMachine();
                 sweepBeforeRelease = false;
             }
-            int fits = countSetsThatFit(toRelease, false);
+            // No more sets than the intermediates on hand cover. A set released without its intermediate holds the
+            // machine for a set that can only finish once the intermediate is made - often in this very machine - so
+            // the rest is released once those sets are done and the intermediate has been made.
+            int fits = countSetsThatFit(Math.min(toRelease, setsCoveredByIntermediates()), false);
             if (fits > 0) {
                 releaseSets(fits);
                 setTooLarge = false;
@@ -2564,51 +2579,39 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
 
-        // Take anything of ours out of the buffers, but only while this module holds the machine. A set that was
-        // already released can still be short - its ingredient may have reached a buffer afterwards, and nothing else
-        // would ever move it - so this can't wait for the next release. It must still respect the claim: pulling into
-        // a machine another crafter is working in is exactly the ingredient mixing the claim exists to prevent.
+        // Take what the buffers hold for the released sets, but only while this module holds the machine. A released
+        // set can still be short - its ingredient may have reached a buffer after the release, and nothing else would
+        // ever move it - so this can't wait for the next release. What a released set still needs delivered is exactly
+        // its unsent allowance; pulling more would load sets that aren't released yet, and those would still be in
+        // the machine when it is handed to the next recipe. It must respect the claim too: pulling into a machine
+        // another crafter is working in is exactly the ingredient mixing the claim exists to prevent.
         for (int slot = 0; claimedMachine != null && !ModuleCraftingBuffer.AllBuffers.isEmpty()
                 && slot < INGREDIENT_SLOTS; slot++) {
-            if (!isGatedSlot(slot)) {
-                continue;
-            }
-            ItemIdentifierStack material = getMaterials(slot);
-            // Buffer credit first: it is the cheaper question, and asking it avoids scanning the machine for every
-            // ingredient slot only to find there was nothing to fetch.
-            if (bufferedFor(slot) <= 0) {
-                continue;
-            }
-            int needed = wanted * material.getStackSize() - inFlight[slot] - machineStock(material.getItem());
-            if (needed > 0) {
-                pullFromBuffers(slot, needed);
+            if (isGatedSlot(slot) && allowance[slot] > 0 && bufferedFor(slot) > 0) {
+                pullFromBuffers(slot, allowance[slot]);
             }
         }
 
-        // The fluid twin of the loop above: pull the intermediates another crafter parked in a fluid buffer, for this
-        // set's fluid ingredients. A fluid's machine-room lives in the tank, so the "already here" term is what the
-        // tank
-        // holds of it; there is no machine inventory to count. The pull is itself capped by the tank's room.
+        // TEMP [FluidGate DIAG]: why buffered fluid is or isn't pulled. Remove once the double-request stall is found.
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isFluidSlot(slot) && (fluidBuffered[slot] > 0 || allowance[slot] > 0)) {
+                logFluidGateDiag(slot, wanted, setsNeeded);
+            }
+        }
+
+        // The fluid twin of the loop above, for intermediates and raw fluid parked in a fluid buffer. The pull is
+        // itself capped by the room the machine's tank has.
         for (int slot = 0; claimedMachine != null && !ModuleFluidCraftingBuffer.AllBuffers.isEmpty()
                 && slot < INGREDIENT_SLOTS; slot++) {
-            if (!isBufferableFluidSlot(slot)) {
-                continue;
-            }
-            if (fluidBufferedFor(slot) <= 0) {
-                continue;
-            }
-            IFluidHandler tank = facedTank();
-            FluidIdentifier fluid = getFluidIngredient(slot);
-            int onHand = inFlight[slot] + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
-            int neededFluid = wanted * fluidAmount[slot] - onHand;
-            if (neededFluid > 0) {
-                pullFluidFromBuffers(slot, neededFluid);
+            if (isBufferableFluidSlot(slot) && allowance[slot] > 0 && fluidBufferedFor(slot) > 0) {
+                pullFluidFromBuffers(slot, allowance[slot]);
             }
         }
 
         // Hand the machine over once the sets in it are done, if someone else is waiting for it. An owner that
         // couldn't release anything (machine blocked) keeps it for a while first, so two blocked crafters don't pass it
-        // back and forth every tick.
+        // back and forth every tick. This is the only way a crafter gives the machine up mid-job: with releases capped
+        // at the intermediates on hand, a crafter never holds sets that need the machine back to finish.
         boolean hadTurn = releasedThisTurn || now() - claimTakenTick >= SAFETY_NET_TICKS;
         if (claimedMachine != null && hadTurn
                 && setsReleased == 0
@@ -2616,22 +2619,58 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
             releaseClaim();
             gateDirty = true; // queue up again behind the crafter that is waiting
-        } else if (claimedMachine != null && isBlockedWaitingForIngredients() && waiterMakesMissingIngredient()) {
-                    // Holding the machine and getting nothing, while the crafter that would make the missing
-                    // ingredient waits for this very machine. The allowance goes back too, so providers stop sending
-                    // into a machine this module no longer owns. Without this the two would wait on each other for
-                    // ever. Only then: giving the machine up for any other reason leaves this set's delivered
-                    // ingredients inside while the next crafter loads its own, i.e. two recipes in one machine. A set
-                    // whose ingredient is merely stuck at its source keeps the machine and waits, which shows in the
-                    // Request Table instead of quietly mixing recipes.
-                    for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-                        allowance[slot] = 0;
-                    }
-                    setsReleased = 0;
-                    clearResultProgress();
-                    releaseClaim();
-                    gateDirty = true;
-                }
+        }
+    }
+
+    /** TEMP [FluidGate DIAG] rate limit. */
+    private long lastFluidDiagTick = 0;
+
+    /** TEMP [FluidGate DIAG]: one line per fluid slot with buffer credit or allowance, at most once a second. */
+    private void logFluidGateDiag(int slot, int wanted, int setsNeeded) {
+        if (now() - lastFluidDiagTick < 20) {
+            return;
+        }
+        lastFluidDiagTick = now();
+        FluidIdentifier fluid = getFluidIngredient(slot);
+        IFluidHandler tank = facedTank();
+        int held = tank == null ? -1 : heldInTank(tank, fluid, insertionSide());
+        int room = tank == null ? -1 : tank.fill(insertionSide(), fluid.makeFluidStack(1000000), false);
+        LogisticsPipes.log.info(
+                "[FluidGate DIAG] " + getX()
+                        + ","
+                        + getY()
+                        + ","
+                        + getZ()
+                        + " slot "
+                        + slot
+                        + " "
+                        + fluid
+                        + " bufferable="
+                        + isBufferableFluidSlot(slot)
+                        + " credit="
+                        + fluidBuffered[slot]
+                        + " stock="
+                        + fluidBufferStock(fluid)
+                        + " allowance="
+                        + allowance[slot]
+                        + " inFlight="
+                        + inFlight[slot]
+                        + " held="
+                        + held
+                        + " room="
+                        + room
+                        + " perSet="
+                        + fluidAmount[slot]
+                        + " wanted="
+                        + wanted
+                        + " setsNeeded="
+                        + setsNeeded
+                        + " setsReleased="
+                        + setsReleased
+                        + " claimed="
+                        + (claimedMachine != null)
+                        + " covered="
+                        + setsCoveredByIntermediates());
     }
 
     /**
@@ -2652,6 +2691,25 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * the machine. Its allowance stayed outstanding, so the stuck-set rule never fired either.
      */
     private boolean intermediatesReady() {
+        return setsCoveredByIntermediates() > 0;
+    }
+
+    /**
+     * How many more sets the ingredients that are held back (see {@link #intermediatesReady}) cover, beyond the sets
+     * already released: those sets' share is already spoken for, and counting it again would release a set whose
+     * intermediate doesn't exist yet. Integer.MAX_VALUE when no ingredient is held back.
+     * <p>
+     * A released set whose intermediate the machine has already taken in no longer shows on hand, so this can read
+     * low while sets are running. That only delays the next release until they finish; it never releases too many.
+     */
+    private int setsCoveredByIntermediates() {
+        int sets = setsOfIntermediatesOnHand();
+        return sets == Integer.MAX_VALUE ? sets : Math.max(0, sets - setsReleased);
+    }
+
+    /** How many sets the held-back ingredients on hand make up, slot by slot; Integer.MAX_VALUE when none is. */
+    private int setsOfIntermediatesOnHand() {
+        int sets = Integer.MAX_VALUE;
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (!isGatedSlot(slot)) {
                 continue;
@@ -2662,9 +2720,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             int onHand = inFlight[slot] + bufferedFor(slot) + machineStock(item);
-            if (onHand < material.getStackSize()) {
-                return false;
-            }
+            sets = Math.min(sets, onHand / material.getStackSize());
         }
         // The fluid twin of the loop above. Without it a recipe whose only intermediate is a fluid is always "ready",
         // so its raw materials are released the moment the order lands - before the fluid that gates them exists.
@@ -2677,7 +2733,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // unobservable slot is treated as ready (holding blind would only trip the safety valve) - the no-wait
         // behaviour that path always had.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (!isFluidSlot(slot)) {
+            if (!isFluidSlot(slot) || fluidAmount[slot] <= 0) {
                 continue;
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
@@ -2697,9 +2753,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 }
                 onHand = satHeld;
             }
-            if (onHand < fluidAmount[slot]) {
-                return false;
-            }
+            sets = Math.min(sets, onHand / fluidAmount[slot]);
         }
         // Satellite item slots: isGatedSlot excludes them (a satellite-delivered item never occupies this machine's
         // inputs and must not count against the room check), so the first loop skips them. They still need the
@@ -2713,7 +2767,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             ItemIdentifierStack material = getMaterials(slot);
-            if (material == null) {
+            if (material == null || material.getStackSize() <= 0) {
                 continue;
             }
             ItemIdentifier item = material.getItem();
@@ -2724,11 +2778,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (onHand < 0) {
                 continue; // unobservable (not a Smart Satellite machine): ready, as the item path always was
             }
-            if (onHand < material.getStackSize()) {
-                return false;
-            }
+            sets = Math.min(sets, onHand / material.getStackSize());
         }
-        return true;
+        return sets;
     }
 
     /**
@@ -2909,6 +2961,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // A set from "Request set" is finished once its ingredients are delivered: it exists to hand the machine one
         // more set, so no result is expected and none is taken back out. Only ordered sets are counted as in flight.
         setsReleased += sets - manual;
+        manualSetOut |= manual > 0 && manualSetComplete;
         // Anything the buffers are already holding for this recipe comes now; the rest is left to the providers.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
@@ -2921,101 +2974,28 @@ public class ModuleSmartCrafter extends ModuleCrafter
         lastProgressTick = now();
     }
 
-    /**
-     * Gives up released sets whose results never came back to this module (taken by a player, auto-output, a chanced
-     * output that produced nothing). Only when everything was delivered, none of the ingredients are left in the
-     * machine and nothing happened for a while. A slow recipe that is still running is harmless to give up: its result
-     * is still counted when it comes out, and no extra ingredients arrive because providers only send what was ordered.
-     */
-    private void giveUpStuckSets() {
-        if (setsReleased == 0 || !nothingInFlight() || now() - lastProgressTick < STUCK_TICKS) {
-            return;
-        }
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (allowance[slot] > 0) {
-                return;
-            }
-        }
-        if (machineHoldsIngredients()) {
-            return;
-        }
-        setsReleased = 0;
-        clearResultProgress();
-    }
-
-    /**
-     * Whether a crafter in line for this module's machine makes an ingredient the released set is still short of. That
-     * is the one case where holding on can never end: the ingredient can only be made in the machine this module holds.
-     */
-    private boolean waiterMakesMissingIngredient() {
-        List<ModuleSmartCrafter> waiters = MachineClaims.waiters(claimedMachine, this);
-        if (waiters.isEmpty()) {
+    /** Sets are out and nothing is on its way, but ingredients the providers may send still haven't come. */
+    private boolean isBlockedWaitingForIngredients() {
+        if (setsReleased == 0 || !nothingInFlight()) {
             return false;
         }
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isFluidSlot(slot)) {
-                FluidIdentifier fluid = getFluidIngredient(slot);
-                if (fluid == null || fluidSlotOnHand(slot, fluid) >= fluidAmount[slot]) {
-                    continue;
-                }
-                for (ModuleSmartCrafter waiter : waiters) {
-                    if (waiter.fluidResultSlot(fluid) >= 0) {
-                        return true;
-                    }
-                }
-                continue;
-            }
-            ItemIdentifierStack material = getMaterials(slot);
-            if (material == null || material.getStackSize() <= 0
-                    || itemSlotOnHand(slot, material.getItem()) >= material.getStackSize()) {
-                continue;
-            }
-            for (ModuleSmartCrafter waiter : waiters) {
-                for (ItemIdentifierStack result : waiter.getConfiguredCraftResults()) {
-                    if (result.getItem().equals(material.getItem())) {
-                        return true;
-                    }
-                }
+            if (allowance[slot] > 0) {
+                return true;
             }
         }
         return false;
     }
 
     /**
-     * How much of an item slot's ingredient is on hand for it. A slot bound to a satellite is read from that satellite's
-     * machine; one that can't be read counts as missing, so the deadlock check errs towards handing over.
-     */
-    private int itemSlotOnHand(int slot, ItemIdentifier item) {
-        if (advancedSatelliteIdArray[slot] != 0) {
-            return Math.max(0, itemsInSatelliteMachine(slot, item));
-        }
-        return inFlight[slot] + bufferedFor(slot) + machineStock(item);
-    }
-
-    /** The fluid twin of {@link #itemSlotOnHand}. */
-    private int fluidSlotOnHand(int slot, FluidIdentifier fluid) {
-        if (advancedSatelliteIdArray[slot] != 0) {
-            return Math.max(0, heldInSatelliteMachine(slot, fluid));
-        }
-        IFluidHandler tank = facedTank();
-        return inFlight[slot] + fluidBufferedFor(slot) + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
-    }
-
-    /** Sets are out, nothing is on its way, and nothing has happened for a while: the ingredients are not coming. */
-    private boolean isBlockedWaitingForIngredients() {
-        return setsReleased > 0 && nothingInFlight() && now() - lastProgressTick >= STUCK_TICKS;
-    }
-
-    /**
-     * Whether ingredients are still granted but unsent, or sent and not yet arrived. Bounded by {@link #STUCK_TICKS} so
-     * a provider that never delivers can't hold the gate open for good.
+     * Whether ingredients are still on their way here after the last order finished, so the gate must not reset under
+     * them. Sent ones always count. Granted but unsent ones only count for a "Request set" set, which has no order
+     * behind it and is the one case where a provider still sends after the work is done; any other leftover allowance
+     * has nothing to send against, and waiting on it would keep the machine claimed for good.
      */
     private boolean deliveryInProgress() {
-        if (now() - lastProgressTick >= STUCK_TICKS) {
-            return false;
-        }
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (allowance[slot] > 0 || inFlight[slot] > 0) {
+            if (inFlight[slot] > 0 || (manualSetOut && allowance[slot] > 0)) {
                 return true;
             }
         }
@@ -3038,6 +3018,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         setsReleased = 0;
         pendingManualSets = 0;
+        manualSetOut = false;
         clearResultProgress();
         setTooLarge = false;
         releaseClaim();
@@ -3056,6 +3037,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             allowance[slot] = 0;
         }
+        manualSetOut = false;
     }
 
     private void stopWaiting() {
@@ -3407,27 +3389,6 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     private void sendSwept(ItemStack stack) {
         _service.queueRoutedItem(SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack), ForgeDirection.UP);
-    }
-
-    /** Whether any of this recipe's gated ingredients are still sitting in the machine's input slots. */
-    private boolean machineHoldsIngredients() {
-        IInventory inv = _service.getRealInventory();
-        if (inv == null) {
-            return false;
-        }
-        int[] slots = insertableSlots(inv, insertionSide());
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (!isGatedSlot(slot)) {
-                continue;
-            }
-            ItemStack proto = getMaterials(slot).getItem().makeNormalStack(1);
-            for (int machineSlot : slots) {
-                if (isSameItem(inv.getStackInSlot(machineSlot), proto)) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private ForgeDirection insertionSide() {

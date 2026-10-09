@@ -18,7 +18,6 @@ import net.minecraft.world.World;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
-import logisticspipes.LogisticsPipes;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
@@ -313,45 +312,26 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
     public SinkReply sinksItem(ItemIdentifier item, int bestPriority, int bestCustomPriority, boolean allowDefault,
             boolean includeInTransit) {
         if (_sinkReply == null) {
-            return debugDecline(item, "not registered in a chassis slot yet");
+            return null; // not registered in a chassis slot yet
         }
         if (bestPriority > _sinkReply.fixedPriority.ordinal() || (bestPriority == _sinkReply.fixedPriority.ordinal()
                 && bestCustomPriority >= _sinkReply.customPriority)) {
-            return debugDecline(item, "a better sink already replied");
+            return null; // a better sink already replied
         }
         if (!isOwed(item)) {
-            return debugDecline(
-                    item,
-                    "no crafter is owed more of it (crafters=" + ModuleSmartCrafter.AllCrafters.size() + ")");
+            return null;
         }
         IInventoryUtil inv = inventory();
         if (inv == null) {
-            return debugDecline(item, "no chest in front of this module");
+            return null; // no chest in front of this module
         }
         // Bounded at a stack: roomForItem stops counting once it has found this many, and a sink reply never needs
         // more than that. Passing 0 counts nothing at all, since the loop runs while count > found.
         int room = inv.roomForItem(item, item.getMaxStackSize());
-        if (room <= 0) {
-            return debugDecline(item, "chest is full");
+        if (room <= 0 || !_service.canUseEnergy(2)) {
+            return null;
         }
-        if (!_service.canUseEnergy(2)) {
-            return debugDecline(item, "no power");
-        }
-        debugDecline(item, "ACCEPTED room=" + room);
         return new SinkReply(_sinkReply, room);
-    }
-
-    private String lastDebug = null;
-    private String lastInterestDebug = null;
-
-    /** Temporary: says why a buffer turned an item away, logged only when the answer changes. */
-    private SinkReply debugDecline(ItemIdentifier item, String reason) {
-        String line = item + ": " + reason;
-        if (!line.equals(lastDebug)) {
-            lastDebug = line;
-            LogisticsPipes.log.info("[Buffer DEBUG] " + line);
-        }
-        return null;
     }
 
     /**
@@ -454,11 +434,6 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         Set<ItemIdentifier> wanted = new HashSet<>();
         for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
             wanted.addAll(crafter.getIntermediates());
-        }
-        String summary = "interests from " + ModuleSmartCrafter.AllCrafters.size() + " crafters: " + wanted;
-        if (!summary.equals(lastInterestDebug)) {
-            lastInterestDebug = summary;
-            LogisticsPipes.log.info("[Buffer DEBUG] " + summary);
         }
         return wanted.isEmpty() ? Collections.emptySet() : wanted;
     }
