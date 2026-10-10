@@ -50,7 +50,6 @@ import logisticspipes.network.guis.module.inhand.SmartCrafterInHand;
 import logisticspipes.network.guis.module.inpipe.SmartCrafterModuleSlot;
 import logisticspipes.network.packets.cpipe.SmartCrafterSetting;
 import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
-import logisticspipes.pipes.PipeFluidSatellite;
 import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
@@ -62,7 +61,6 @@ import logisticspipes.request.resources.DictResource;
 import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
-import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.FluidLogisticsPromise;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.LogisticsPromise;
@@ -1205,73 +1203,38 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * The item satellite an ingredient slot is routed to, or null if its id is unset or can't be reached.
+     * The Smart Satellite an item ingredient slot is routed to, or null if its id is unset or no reachable Smart
+     * Satellite has it.
      * <p>
-     * A normal item satellite is preferred; otherwise a Smart Satellite is matched too, so a plain (non-fluid)
-     * ingredient can be addressed to it the same way as to a normal item satellite. The Smart Satellite is a fluid
-     * type, but it carries a plain item to the machine it faces (see {@code PipeSmartSatellite#endReached}, which only
-     * handles fluid containers and lets everything else fall through to the machine inventory).
+     * Only Smart Satellites are matched: normal item and fluid satellites have their own id numbers, so the same id
+     * can name several pipes, and only a Smart Satellite faces a single machine this module can watch. The Smart
+     * Satellite is a fluid type, but it carries a plain item to the machine it faces (see
+     * {@code PipeSmartSatellite#endReached}, which only handles fluid containers and lets everything else fall through
+     * to the machine inventory).
      */
     @Override
     public IRouter getSatelliteRouter(int x) {
-        IRouter router = super.getSatelliteRouter(x);
-        if (router != null) {
-            return router;
-        }
-        int id = x == -1 ? satelliteId : advancedSatelliteIdArray[x];
-        if (id == 0) {
-            return null;
-        }
-        for (final PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
-            if (satellite.satelliteId == id && !satellite.stillNeedReplace() && satellite.getRouter() != null) {
-                return satellite.getRouter();
-            }
-        }
-        return null;
+        PipeSmartSatellite satellite = smartSatelliteForId(x == -1 ? satelliteId : advancedSatelliteIdArray[x]);
+        return satellite == null ? null : satellite.getRouter();
     }
 
     /**
-     * The fluid satellite an ingredient slot is routed to, or null if its id is unset or can't be reached. A normal
-     * fluid satellite is preferred; otherwise a Smart Satellite is matched too, so a fluid ingredient can be addressed
-     * to it the same way. The Smart Satellite pours the fluid into the machine it faces via the shared
-     * {@code FluidRoutedPipe} behaviour, exactly like a fluid satellite.
+     * The Smart Satellite a fluid ingredient slot is routed to, or null if its id is unset or no reachable Smart
+     * Satellite has it. It pours the fluid into the machine it faces via the shared {@code FluidRoutedPipe} behaviour.
      */
-    private IRequestFluid fluidSatelliteFor(int slot) {
-        int id = advancedSatelliteIdArray[slot];
-        if (id == 0) {
-            return null;
-        }
-        for (PipeFluidSatellite satellite : PipeFluidSatellite.AllSatellites) {
-            if (satellite.satelliteId != id || satellite.stillNeedReplace() || satellite.getRouter() == null) {
-                continue;
-            }
-            if (isReachable(satellite.getRouter())) {
-                return satellite;
-            }
-        }
-        for (PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
-            if (satellite.satelliteId != id || satellite.stillNeedReplace() || satellite.getRouter() == null) {
-                continue;
-            }
-            if (isReachable(satellite.getRouter())) {
-                return satellite;
-            }
-        }
-        return null;
+    private PipeSmartSatellite fluidSatelliteFor(int slot) {
+        return smartSatelliteForId(advancedSatelliteIdArray[slot]);
     }
 
+    /** Whether this module's router has a route to the given one: a direct lookup in its route table by router id. */
     private boolean isReachable(IRouter router) {
-        for (ExitRoute route : getRouter().getIRoutersByCost()) {
-            if (route.destination == router) {
-                return true;
-            }
-        }
-        return false;
+        return !getRouter().getDistanceTo(router).isEmpty();
     }
 
     /**
-     * A fluid can't be delivered to the chassis, so every fluid slot needs a satellite that can be reached. Without one
-     * the module stops offering the recipe, instead of crafting without the fluid.
+     * Every ingredient slot that names a satellite needs a reachable Smart Satellite with that id. Without one the
+     * module stops offering the recipe, instead of crafting without that ingredient. A slot with no id is delivered to
+     * this module itself (a fluid is poured into the machine it faces), so there is nothing to reach.
      */
     @Override
     public boolean isSatelliteConnected() {
@@ -1279,16 +1242,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (getMaterials(slot) == null) {
                 continue;
             }
-            if (isFluidSlot(slot)) {
-                // No id means this module takes the fluid itself, so there is nothing to reach.
-                if (advancedSatelliteIdArray[slot] != 0 && fluidSatelliteFor(slot) == null) {
-                    return false;
-                }
-            } else if (advancedSatelliteIdArray[slot] != 0) {
-                IRouter router = getSatelliteRouter(slot);
-                if (router == null || !isReachable(router)) {
-                    return false;
-                }
+            if (advancedSatelliteIdArray[slot] != 0 && smartSatelliteForId(advancedSatelliteIdArray[slot]) == null) {
+                return false;
             }
         }
         return true;
@@ -1386,8 +1341,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return Collections.singletonList(source);
     }
 
-    /** The Smart Satellite whose id an output is addressed to, or null if it isn't placed and reachable yet. */
+    /**
+     * The Smart Satellite with this id that this module can reach, or null if the id is unset or no such satellite is
+     * placed and reachable yet. The one lookup behind every satellite id this module holds, input or output.
+     */
     private PipeSmartSatellite smartSatelliteForId(int id) {
+        if (id == 0) {
+            return null;
+        }
         for (PipeSmartSatellite satellite : PipeSmartSatellite.AllSatellites) {
             if (satellite.satelliteId == id && !satellite.stillNeedReplace()
                     && satellite.getRouter() != null
@@ -2729,9 +2690,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // - non-satellite: this module's own machine tank, plus what is in flight and parked in a fluid buffer;
         // - satellite-routed: the machine the slot's satellite pours into - a DIFFERENT machine from the one this
         // module faces - and a satellite never goes through a buffer, so the tank's contents are the whole total.
-        // Only a Smart Satellite has a single machine to read; a normal fluid satellite serves several tanks, so an
-        // unobservable slot is treated as ready (holding blind would only trip the safety valve) - the no-wait
-        // behaviour that path always had.
+        // A slot whose Smart Satellite isn't placed, or faces no tank yet, can't be read, so it is treated as ready
+        // (holding blind would only stall) - the no-wait behaviour that path always had.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (!isFluidSlot(slot) || fluidAmount[slot] <= 0) {
                 continue;
@@ -2776,7 +2736,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             int onHand = itemsInSatelliteMachine(slot, item);
             if (onHand < 0) {
-                continue; // unobservable (not a Smart Satellite machine): ready, as the item path always was
+                continue; // unobservable (no Smart Satellite machine to read): ready, as the item path always was
             }
             sets = Math.min(sets, onHand / material.getStackSize());
         }
@@ -2785,8 +2745,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * How many of this item are already in the machine a satellite-routed item slot delivers into, or -1 when the slot
-     * can't be observed that way: it names no satellite, it names a normal item satellite (no single machine to read),
-     * or the Smart Satellite's machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather
+     * can't be observed that way: it names no satellite, no reachable Smart Satellite has its id, or that satellite's
+     * machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather
      * than hold blind. Satellite item slots are not tracked in inFlight or the buffer (both are gated on isGatedSlot),
      * so the machine's inventory is the whole on-hand total.
      */
@@ -2809,19 +2769,17 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * How much of this fluid is already in the machine a satellite-routed fluid slot pours into, or -1 when the slot
-     * can't be observed that way: it names no satellite, it names a normal fluid satellite (several tanks, no single
-     * machine to read), or the Smart Satellite's machine is not (yet) a fluid handler. -1 lets the caller treat the
-     * slot as ready rather than hold blind.
+     * can't be observed that way: it names no satellite, no reachable Smart Satellite has its id, or that satellite's
+     * machine is not (yet) a fluid handler. -1 lets the caller treat the slot as ready rather than hold blind.
      */
     private int heldInSatelliteMachine(int slot, FluidIdentifier fluid) {
         if (advancedSatelliteIdArray[slot] == 0 || fluid == null) {
             return -1;
         }
-        IRequestFluid sat = fluidSatelliteFor(slot);
-        if (!(sat instanceof PipeSmartSatellite)) {
+        PipeSmartSatellite smart = fluidSatelliteFor(slot);
+        if (smart == null) {
             return -1;
         }
-        PipeSmartSatellite smart = (PipeSmartSatellite) sat;
         ForgeDirection facing = smart.getMachineFacing();
         if (facing == null || !(smart.getMachineTile() instanceof IFluidHandler)) {
             return -1;
