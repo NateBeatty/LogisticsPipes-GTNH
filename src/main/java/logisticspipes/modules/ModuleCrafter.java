@@ -305,7 +305,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             int received;
             CraftingJob previous = CraftingJobs.enter(job);
             try {
-                received = RequestTree.requestPartial(lost.stack, (CoreRoutedPipe) _service, lost.info);
+                received = RequestTree.requestPartial(lost.stack, lostItemTarget(lost.info), lost.info);
             } finally {
                 CraftingJobs.exit(previous);
             }
@@ -339,6 +339,16 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             this.info = info;
             this.job = job;
         }
+    }
+
+    /** Where a lost ingredient is asked for again: this module's chassis, which is where it always went. */
+    protected IRequestItems lostItemTarget(IAdditionalTargetInformation info) {
+        return (CoreRoutedPipe) _service;
+    }
+
+    /** The target information an ingredient slot's requests carry, so arrivals and losses find their slot. */
+    protected IAdditionalTargetInformation ingredientInformation(int slot) {
+        return new CraftingChassieInformation(slot, getPositionInt());
     }
 
     @Override
@@ -608,7 +618,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             } else {
                 req = new ItemResource(resourceStack, target[i]);
             }
-            template.addIngredient(req, new CraftingChassieInformation(i, getPositionInt()));
+            template.addIngredient(req, ingredientInformation(i));
         }
 
         int liquidCrafter = getUpgradeManager().getFluidCrafter();
@@ -1644,9 +1654,9 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
      * this stock from the buffer and nothing else.
      */
     protected void onResultBuffered(LogisticsItemOrder order, int amount) {
-        IGatedItemSink gate = gateFor(order);
-        if (gate instanceof ModuleSmartCrafter) {
-            ((ModuleSmartCrafter) gate).creditBuffered(order.getInformation(), amount);
+        ModuleSmartCrafter crafter = ModuleSmartCrafter.gatedCrafter(gateFor(order), order.getInformation());
+        if (crafter != null) {
+            crafter.creditBuffered(order.getInformation(), amount);
         }
     }
 

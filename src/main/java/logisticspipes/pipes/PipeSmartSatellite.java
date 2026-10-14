@@ -282,11 +282,31 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         return false;
     }
 
-    /* -- Item arrival / loss: forward to the owning crafter -- */
+    /**
+     * The crafter a delivery to this satellite is for. Several Smart Crafters can send to one satellite (recipes that
+     * share a machine's input bus), so the one named by the delivery's target information is used; only a delivery
+     * that names none falls back to {@link #getOwner()}.
+     */
+    public ModuleSmartCrafter crafterFor(IAdditionalTargetInformation info) {
+        ModuleSmartCrafter named = ModuleSmartCrafter.crafterOf(info);
+        return named != null ? named : getOwner();
+    }
+
+    /** A crafter bound to this satellite whose recipe pours this fluid into its machine, or null if none does. */
+    public ModuleSmartCrafter crafterWantingFluid(FluidIdentifier fluid) {
+        for (ModuleSmartCrafter c : ModuleSmartCrafter.AllCrafters) {
+            if (c.poursFluidInto(this, fluid)) {
+                return c;
+            }
+        }
+        return null;
+    }
+
+    /* -- Item arrival / loss: forward to the crafter the delivery was for -- */
 
     @Override
     public void itemArrived(ItemIdentifierStack item, IAdditionalTargetInformation info) {
-        ModuleSmartCrafter c = getOwner();
+        ModuleSmartCrafter c = crafterFor(info);
         if (c != null) {
             c.itemArrived(item, info);
         }
@@ -294,28 +314,22 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
-        ModuleSmartCrafter c = getOwner();
+        ModuleSmartCrafter c = crafterFor(info);
         if (c != null) {
             c.itemLost(item, info);
         }
     }
 
-    /* -- Fluid arrival / not-inserted: forward to the owning crafter -- */
+    /* -- Fluid arrival / not-inserted: a container carries no word of its crafter, so the crafters sort it out -- */
 
     @Override
     public void liquidArrived(FluidIdentifier fluid, int amount) {
-        ModuleSmartCrafter c = getOwner();
-        if (c != null) {
-            c.fluidArrived(fluid, amount);
-        }
+        ModuleSmartCrafter.fluidArrivedAtSatellite(this, fluid, amount);
     }
 
     @Override
     public void liquidNotInserted(FluidIdentifier fluid, int amount) {
-        ModuleSmartCrafter c = getOwner();
-        if (c != null) {
-            c.fluidNotInserted(fluid, amount);
-        }
+        ModuleSmartCrafter.fluidNotInsertedAtSatellite(this, fluid, amount);
     }
 
     @Override
@@ -328,26 +342,31 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         liquidLost(fluid, amount);
     }
 
-    /* -- Gating: delegate to the owning crafter's per-slot allowance -- */
+    /* -- Gating: delegate to the per-slot allowance of the crafter the delivery is for -- */
 
     @Override
     public int getGatedAllowance(ItemIdentifier item, IAdditionalTargetInformation info) {
-        ModuleSmartCrafter c = getOwner();
+        ModuleSmartCrafter c = crafterFor(info);
         return c == null ? Integer.MAX_VALUE : c.getGatedAllowance(item, info);
     }
 
     @Override
     public void onGatedSend(ItemIdentifier item, int amount, IAdditionalTargetInformation info) {
-        ModuleSmartCrafter c = getOwner();
+        ModuleSmartCrafter c = crafterFor(info);
         if (c != null) {
             c.onGatedSend(item, amount, info);
         }
     }
 
+    /** Turned away if any crafter bound to this satellite gates that item into its machine. */
     @Override
     public boolean declinesUntrackedItem(ItemIdentifier item) {
-        ModuleSmartCrafter c = getOwner();
-        return c != null && c.declinesUntrackedItem(item);
+        for (ModuleSmartCrafter c : ModuleSmartCrafter.AllCrafters) {
+            if (c.usesSatellite(this) && c.declinesUntrackedAt(this, item)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /* -- Fluid delivery: fill ONLY the facing machine, report not-inserted on overflow -- */

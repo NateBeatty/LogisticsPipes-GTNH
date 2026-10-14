@@ -1,5 +1,6 @@
 package logisticspipes.modules;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -93,11 +94,13 @@ import lombok.Getter;
  * checked again and more sets are released. Providers ask {@link #getGatedAllowance} before sending, so held
  * ingredients stay reserved in storage instead of bouncing off a full machine.
  * <p>
- * Only ingredients delivered to this module's own machine are gated. Ingredients sent to satellites are not.
+ * Every ingredient goes through the gate, whether it is delivered to the machine this module faces or to the machine of
+ * a Smart Satellite: the room check is run for each of those machines and a set is only released when all of them have
+ * room for it.
  * <p>
- * Sets are only released while this module holds the machine's claim ({@link MachineClaims}), so two Smart Crafters on
- * one machine take turns instead of mixing their ingredients. When another crafter is waiting, the owner stops
- * releasing new sets, lets the ones in the machine finish and hands the machine over.
+ * Sets are only released while this module holds the claim ({@link MachineClaims}) on every one of those machines, so
+ * two Smart Crafters sharing a machine take turns instead of mixing their ingredients. When another crafter is waiting,
+ * the owner stops releasing new sets, lets the ones in the machines finish and hands them over.
  */
 public class ModuleSmartCrafter extends ModuleCrafter
         implements IGatedItemSink, IRequestFluid, IFluidContainerReceiver, ICraftFluids {
@@ -135,10 +138,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private long lastNoFluidSinkWarn = 0;
     private static final long FLUID_SINK_WARN_COOLDOWN = 400L; // ~20 s between repeat warnings
 
-    /** The machine this module currently holds the claim for, or null. */
-    private MachineClaims.Key claimedMachine = null;
-    /** The machine this module is waiting to claim, or null. */
-    private MachineClaims.Key awaitedMachine = null;
+    /**
+     * The machines this module currently holds the claim for: the one it faces and the machine of every Smart Satellite
+     * its ingredients go to. Empty when it holds none; it never holds only some of them.
+     */
+    private List<MachineClaims.Key> claimedMachines = Collections.emptyList();
+    /** Whether this module is in line for its machines. */
+    private boolean awaitingMachines = false;
     /** Whether sets were released since the claim was taken, so a new owner always gets at least one turn. */
     private boolean releasedThisTurn = false;
     private long claimTakenTick = 0;
@@ -208,10 +214,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /** Percent chance of getting this output from one set. {@link #GUARANTEED} means every set yields it. */
     private final int[] outputChance = new int[OUTPUT_SLOTS];
     /**
-     * Which satellite an output comes out of, for a recipe whose results appear somewhere other than the block this
-     * module faces (a multiblock's output bus). <b>Stored and edited, but nothing reads it yet:</b> extracting through
-     * a satellite needs the Smart Satellite, which doesn't exist. Until then every output is taken from this module's
-     * own machine, whatever is set here.
+     * Which Smart Satellite an output comes out of, for a recipe whose results appear somewhere other than the block
+     * this module faces (a multiblock's output bus). Read by {@link #resultSourcesFor} and the cleanup sweeps.
      */
     private final int[] outputSatelliteId = new int[OUTPUT_SLOTS];
 
@@ -269,8 +273,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * The ingredients this module would take from a buffer: its gated item slots, i.e. the ones delivered to its own
-     * machine. Fluids and satellite-routed slots go their own way and never sit in a buffer.
+     * The item ingredients this module would take from a buffer: all of its gated item slots, whether they go to its
+     * own machine or to a Smart Satellite's. Fluids have buffers of their own.
      */
     public Set<ItemIdentifier> getIntermediates() {
         Set<ItemIdentifier> items = new HashSet<>();
@@ -347,10 +351,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             buffered[slot] -= take;
             taken += take;
             // Which request it was for is not known here; the re-request runs as a job of its own.
-            _lostItems.add(
-                    new DelayedGeneric<>(
-                            new LostItem(item.makeStack(take), new CraftingChassieInformation(slot, getPositionInt()), null),
-                            5000));
+            _lostItems.add(new DelayedGeneric<>(new LostItem(item.makeStack(take), ingredientInformation(slot), null), 5000));
         }
         if (taken > 0) {
             gateDirty = true;
@@ -365,15 +366,79 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     public static ModuleCraftingBuffer bufferForShutGate(IGatedItemSink gate, ItemIdentifier item,
             IAdditionalTargetInformation info) {
-        if (!(gate instanceof ModuleSmartCrafter)) {
+        ModuleSmartCrafter crafter = gatedCrafter(gate, info);
+        if (crafter == null) {
             return null;
         }
-        ModuleSmartCrafter crafter = (ModuleSmartCrafter) gate;
         int slot = ingredientSlot(info);
         if (slot < 0 || !crafter.isGatedSlot(slot) || crafter.allowance[slot] > 0) {
             return null;
         }
         return ModuleCraftingBuffer.withRoomFor(item);
+    }
+
+    /**
+     * The Smart Crafter behind a gate an order is addressed to: the gate itself when the order goes to a Smart
+     * Crafter's own machine, or the crafter that asked for it when it goes to a Smart Satellite (which several crafters
+     * can share). Null for anything else, which isn't gated.
+     */
+    public static ModuleSmartCrafter gatedCrafter(IGatedItemSink gate, IAdditionalTargetInformation info) {
+        if (gate instanceof ModuleSmartCrafter) {
+            return (ModuleSmartCrafter) gate;
+        }
+        if (gate instanceof PipeSmartSatellite) {
+            return ((PipeSmartSatellite) gate).crafterFor(info);
+        }
+        return null;
+    }
+
+    /* Ingredient target information */
+
+    /**
+     * Ingredient slot information that also names the Smart Crafter that asked for the ingredient. The slot alone isn't
+     * enough once a Smart Satellite is involved: several crafters can send to one satellite, and the satellite has to
+     * pass gate questions, arrivals and losses to the right one. It is still a {@link CraftingChassieInformation}, so
+     * everything that reads the slot reads it as before.
+     */
+    public static final class SmartSlotInformation extends CraftingChassieInformation {
+
+        /** Weak, so an order that outlives its module doesn't keep it alive. */
+        private final WeakReference<ModuleSmartCrafter> crafter;
+
+        public SmartSlotInformation(int craftingSlot, int moduleSlot, ModuleSmartCrafter crafter) {
+            super(craftingSlot, moduleSlot);
+            this.crafter = new WeakReference<>(crafter);
+        }
+
+        public ModuleSmartCrafter getCrafter() {
+            return crafter.get();
+        }
+    }
+
+    /** The crafter an ingredient's target information names, or null if it names none. */
+    public static ModuleSmartCrafter crafterOf(IAdditionalTargetInformation info) {
+        return info instanceof SmartSlotInformation ? ((SmartSlotInformation) info).getCrafter() : null;
+    }
+
+    @Override
+    protected IAdditionalTargetInformation ingredientInformation(int slot) {
+        return new SmartSlotInformation(slot, getPositionInt(), this);
+    }
+
+    /**
+     * A lost or bounced ingredient is asked for again where it was meant to go: the slot's Smart Satellite, or this
+     * module's own machine.
+     */
+    @Override
+    protected IRequestItems lostItemTarget(IAdditionalTargetInformation info) {
+        int slot = ingredientSlot(info);
+        if (slot >= 0 && advancedSatelliteIdArray[slot] != 0) {
+            PipeSmartSatellite sat = smartSatelliteForId(advancedSatelliteIdArray[slot]);
+            if (sat != null) {
+                return sat;
+            }
+        }
+        return super.lostItemTarget(info);
     }
 
     /** What this module may take from the buffers for a slot right now: its credit, as far as the stock goes. */
@@ -411,12 +476,17 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Takes what the buffers are holding for this set, up to this module's credit. Buffered intermediates have no
-     * provider to ask, so unlike raw materials they have to be pulled: the gate opening alone would never move them.
+     * Takes what the buffers are holding for this set, up to this module's credit, and sends it where the slot's
+     * ingredients go: this module's machine, or the slot's Smart Satellite. Buffered intermediates have no provider to
+     * ask, so unlike raw materials they have to be pulled: the gate opening alone would never move them.
      */
     private void pullFromBuffers(int slot, int wanted) {
         wanted = Math.min(wanted, buffered[slot]);
         if (wanted <= 0 || ModuleCraftingBuffer.AllBuffers.isEmpty()) {
+            return;
+        }
+        IRouter target = slotRouter(slot);
+        if (target == null) {
             return;
         }
         ItemIdentifier item = getMaterials(slot).getItem();
@@ -425,11 +495,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (left <= 0) {
                 break;
             }
-            int sent = buffer.sendTo(
-                    item,
-                    left,
-                    getRouter().getSimpleID(),
-                    new CraftingChassieInformation(slot, getPositionInt()));
+            int sent = buffer.sendTo(item, left, target.getSimpleID(), ingredientInformation(slot));
             if (sent > 0) {
                 left -= sent;
                 buffered[slot] = Math.max(0, buffered[slot] - sent);
@@ -443,20 +509,25 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * Per ingredient slot, how much of a fluid sub-crafters have sent to the fluid buffers for this module and it
      * hasn't pulled yet, in millibuckets. The fluid twin of {@code buffered}: the credit is kept here, in the crafter,
-     * never in the buffer. Only a slot that pours into this module's own machine uses it - one bound to a satellite
-     * pours into the satellite's machine instead and goes its own way.
+     * never in the buffer. A pull pours it into the machine the slot's fluid goes to: this module's own, or the slot's
+     * Smart Satellite's.
      */
     private final int[] fluidBuffered = new int[INGREDIENT_SLOTS];
 
-    /** Whether this fluid slot pours into this module's own machine, the only case the fluid gate and buffers touch. */
-    private boolean isBufferableFluidSlot(int slot) {
-        return isFluidSlot(slot) && advancedSatelliteIdArray[slot] == 0;
+    /** Whether this fluid slot goes through the gate. Every fluid slot does, wherever it pours. */
+    private boolean isGatedFluidSlot(int slot) {
+        return isFluidSlot(slot);
     }
 
-    /** A sub-crafter sent a fluid meant for this module to a buffer, because this module's gate was shut. */
+    /** A sub-crafter sent a fluid meant for this module's own machine to a buffer, because the gate was shut. */
     public void creditFluidBuffered(FluidIdentifier fluid, int amount) {
-        int slot = fluidSlotFor(fluid);
-        if (slot < 0 || !isBufferableFluidSlot(slot) || amount <= 0) {
+        creditFluidBuffered(fluid, amount, null);
+    }
+
+    /** {@link #creditFluidBuffered(FluidIdentifier, int)} for the slot pouring into {@code sat}'s machine (null: own). */
+    private void creditFluidBuffered(FluidIdentifier fluid, int amount, PipeSmartSatellite sat) {
+        int slot = fluidSlotFor(fluid, sat);
+        if (slot < 0 || amount <= 0) {
             return;
         }
         fluidBuffered[slot] += amount;
@@ -467,7 +538,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public int getBufferFluidCredit(FluidIdentifier fluid) {
         int total = 0;
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (fluidBuffered[slot] > 0 && isBufferableFluidSlot(slot) && getFluidIngredient(slot).equals(fluid)) {
+            if (fluidBuffered[slot] > 0 && isGatedFluidSlot(slot) && getFluidIngredient(slot).equals(fluid)) {
                 total += fluidBuffered[slot];
             }
         }
@@ -507,10 +578,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Takes what the fluid buffers hold for a slot, up to this module's credit and the room its machine's tank still
-     * has, and pours it into the machine. Like {@link #pullFromBuffers}, buffered fluid has no provider to ask, so it
-     * has to be pulled once the gate opens; and like the gate, it is capped by the tank's room so the delivery never
-     * bounces.
+     * Takes what the fluid buffers hold for a slot, up to this module's credit and the room the slot's tank still has,
+     * and pours it into that tank: this module's machine, or the slot's Smart Satellite's. Like
+     * {@link #pullFromBuffers}, buffered fluid has no provider to ask, so it has to be pulled once the gate opens; and
+     * like the gate, it is capped by the tank's room so the delivery never bounces.
      */
     private void pullFluidFromBuffers(int slot, int wanted) {
         wanted = Math.min(wanted, fluidBuffered[slot]);
@@ -518,12 +589,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         FluidIdentifier fluid = getFluidIngredient(slot);
-        if (fluid == null) {
+        IRouter target = slotRouter(slot);
+        if (fluid == null || target == null) {
             return;
         }
-        IFluidHandler tank = facedTank();
-        int room = tank == null ? 0 : tank.fill(insertionSide(), fluid.makeFluidStack(wanted), false);
-        wanted = Math.min(wanted, Math.max(room, 0));
+        wanted = Math.min(wanted, tankRoom(endpointOf(slot), fluid, wanted));
         if (wanted <= 0) {
             return;
         }
@@ -532,7 +602,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (left <= 0) {
                 break;
             }
-            int sent = buffer.sendToFluid(fluid, left, getRouter().getSimpleID());
+            int sent = buffer.sendToFluid(fluid, left, target.getSimpleID());
             if (sent > 0) {
                 left -= sent;
                 fluidBuffered[slot] = Math.max(0, fluidBuffered[slot] - sent);
@@ -544,23 +614,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * How much of this fluid the gate allows into this module right now, in millibuckets: the released-set credit
-     * ({@code allowance}) capped by the room the machine's tank actually has, so a full machine reads zero and a
-     * producer buffers instead of flooding it. Integer.MAX_VALUE when the fluid is not a bufferable ingredient. Mirrors
-     * {@link #getGatedAllowance} on the item side, plus the tank-room check that items get from the release-time sim.
+     * How much of this fluid the gate allows into this module's own machine right now, in millibuckets: the
+     * released-set credit ({@code allowance}) capped by the room the machine's tank actually has, so a full machine
+     * reads zero and a producer buffers instead of flooding it. Integer.MAX_VALUE when no slot pouring into this
+     * module's machine wants the fluid. Mirrors {@link #getGatedAllowance} on the item side, plus the tank-room check
+     * that items get from the release-time sim.
      */
     public int getFluidGatedAllowance(FluidIdentifier fluid) {
-        int slot = fluidSlotFor(fluid);
-        if (slot < 0 || !isBufferableFluidSlot(slot)) {
+        return fluidAllowance(fluid, null);
+    }
+
+    /** {@link #getFluidGatedAllowance} for the slot pouring into {@code sat}'s machine (null: this module's own). */
+    private int fluidAllowance(FluidIdentifier fluid, PipeSmartSatellite sat) {
+        int slot = fluidSlotFor(fluid, sat);
+        if (slot < 0) {
             return Integer.MAX_VALUE;
         }
         int grant = this.allowance[slot];
         if (grant <= 0) {
             return 0;
         }
-        IFluidHandler tank = facedTank();
-        int room = tank == null ? 0 : tank.fill(insertionSide(), fluid.makeFluidStack(grant), false);
-        return Math.max(0, Math.min(grant, room));
+        return Math.max(0, Math.min(grant, tankRoom(sat, fluid, grant)));
     }
 
     /**
@@ -568,13 +642,86 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * being grantable and starts being on its way.
      */
     public void onFluidGatedSend(FluidIdentifier fluid, int amount) {
-        int slot = fluidSlotFor(fluid);
-        if (slot < 0 || !isBufferableFluidSlot(slot) || amount <= 0) {
+        onFluidGatedSend(fluid, amount, null);
+    }
+
+    private void onFluidGatedSend(FluidIdentifier fluid, int amount, PipeSmartSatellite sat) {
+        int slot = fluidSlotFor(fluid, sat);
+        if (slot < 0 || amount <= 0) {
             return;
         }
         allowance[slot] = Math.max(0, allowance[slot] - amount);
         inFlight[slot] += amount;
         lastProgressTick = now();
+    }
+
+    /**
+     * The fluid gate an order is subject to, or null when it has none: its consumer is a Smart Crafter's own machine,
+     * or a Smart Satellite whose crafter is named by the order (or, failing that, the one crafter bound to the satellite
+     * that wants this fluid). Lets a fluid producer gate, buffer and report a send without knowing which of the two it
+     * is talking to.
+     */
+    public static FluidGate fluidGateFor(IRequestFluid consumer, IAdditionalTargetInformation info,
+            FluidIdentifier fluid) {
+        if (consumer instanceof ModuleSmartCrafter) {
+            return new FluidGate((ModuleSmartCrafter) consumer, null);
+        }
+        if (!(consumer instanceof PipeSmartSatellite)) {
+            return null;
+        }
+        PipeSmartSatellite sat = (PipeSmartSatellite) consumer;
+        ModuleSmartCrafter crafter = crafterOf(info);
+        if (crafter == null) {
+            crafter = sat.crafterWantingFluid(fluid);
+        }
+        return crafter == null ? null : new FluidGate(crafter, sat);
+    }
+
+    /** One crafter's fluid gate for one machine: its own (no satellite) or a Smart Satellite's. */
+    public static final class FluidGate {
+
+        private final ModuleSmartCrafter crafter;
+        private final PipeSmartSatellite sat;
+
+        private FluidGate(ModuleSmartCrafter crafter, PipeSmartSatellite sat) {
+            this.crafter = crafter;
+            this.sat = sat;
+        }
+
+        /** See {@link ModuleSmartCrafter#getFluidGatedAllowance}. */
+        public int allowance(FluidIdentifier fluid) {
+            return crafter.fluidAllowance(fluid, sat);
+        }
+
+        /** See {@link ModuleSmartCrafter#onFluidGatedSend}. */
+        public void onSend(FluidIdentifier fluid, int amount) {
+            crafter.onFluidGatedSend(fluid, amount, sat);
+        }
+
+        /** See {@link ModuleSmartCrafter#creditFluidBuffered}. */
+        public void creditBuffered(FluidIdentifier fluid, int amount) {
+            crafter.creditFluidBuffered(fluid, amount, sat);
+        }
+    }
+
+    /**
+     * Room a machine's tank has for this fluid, up to {@code wanted}: this module's own (sat null) or a Smart
+     * Satellite's, filled through the face the satellite sits on.
+     */
+    private int tankRoom(PipeSmartSatellite sat, FluidIdentifier fluid, int wanted) {
+        if (fluid == null || wanted <= 0) {
+            return 0;
+        }
+        if (sat == null) {
+            IFluidHandler tank = facedTank();
+            return tank == null ? 0 : Math.max(0, tank.fill(insertionSide(), fluid.makeFluidStack(wanted), false));
+        }
+        ForgeDirection facing = sat.getMachineFacing();
+        TileEntity machine = sat.getMachineTile();
+        if (facing == null || !(machine instanceof IFluidHandler)) {
+            return 0;
+        }
+        return Math.max(0, ((IFluidHandler) machine).fill(facing.getOpposite(), fluid.makeFluidStack(wanted), false));
     }
 
     /** A fluid buffer now holds stock this module may pull; a buffer only takes what is credited, so wake the gate. */
@@ -594,24 +741,97 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // belongs to whichever one sent for it: take the amount off this module first, then off the other modules in
         // this chassis that are waiting for it. Otherwise the sender's count never comes down, it never hands the
         // machine over, and its later sets think the fluid is still coming.
-        int left = takeFluidInFlight(fluid, amount);
+        int left = takeFluidInFlight(fluid, amount, null);
         for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
             if (left <= 0) {
                 return;
             }
             if (other != this && other._service != null && other._service == _service) {
-                left = other.takeFluidInFlight(fluid, left);
+                left = other.takeFluidInFlight(fluid, left, null);
             }
         }
     }
 
-    /** Counts up to {@code amount} of this fluid as arrived. @return the part this module wasn't waiting for */
-    private int takeFluidInFlight(FluidIdentifier fluid, int amount) {
+    /**
+     * A fluid container reached a Smart Satellite and was poured into its machine. Fluid carries no word of which
+     * crafter sent for it, so the amount is taken off the crafters bound to that satellite that have it on its way:
+     * the one holding the machine's claim first (once claims cover satellite machines it is the only one that can have
+     * fluid on its way there), then any other.
+     */
+    public static void fluidArrivedAtSatellite(PipeSmartSatellite sat, FluidIdentifier fluid, int amount) {
+        int left = amount;
+        for (ModuleSmartCrafter crafter : crafterOrderFor(sat)) {
+            if (left <= 0) {
+                return;
+            }
+            left = crafter.takeFluidInFlight(fluid, left, sat);
+        }
+    }
+
+    /**
+     * Part of a fluid delivered to a Smart Satellite didn't fit its machine; the satellite sends it on to storage. The
+     * slot that was waiting for it gets the amount back, so the replacement is let through (mirrors {@link #itemLost}).
+     */
+    public static void fluidNotInsertedAtSatellite(PipeSmartSatellite sat, FluidIdentifier fluid, int amount) {
+        int left = amount;
+        for (ModuleSmartCrafter crafter : crafterOrderFor(sat)) {
+            if (left <= 0) {
+                return;
+            }
+            int slot = crafter.fluidSlotFor(fluid, sat);
+            if (slot < 0 || crafter.inFlight[slot] <= 0) {
+                continue;
+            }
+            int take = Math.min(left, crafter.inFlight[slot]);
+            crafter.inFlight[slot] -= take;
+            crafter.allowance[slot] += take;
+            crafter.gateDirty = true;
+            left -= take;
+        }
+    }
+
+    /** The crafters bound to a satellite, the one holding the claim on its machine first. */
+    private static List<ModuleSmartCrafter> crafterOrderFor(PipeSmartSatellite sat) {
+        List<ModuleSmartCrafter> order = new ArrayList<>();
+        MachineClaims.Key key = machineKeyOf(sat);
+        ModuleSmartCrafter holder = key == null ? null : MachineClaims.holderOf(key);
+        if (holder != null && holder.usesSatellite(sat)) {
+            order.add(holder);
+        }
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter != holder && crafter.usesSatellite(sat)) {
+                order.add(crafter);
+            }
+        }
+        return order;
+    }
+
+    /**
+     * Whether any ingredient slot of this recipe goes to {@code sat}: its id matches, and it is the satellite with that
+     * id this module actually reaches (ids only need to be unique per network).
+     */
+    public boolean usesSatellite(PipeSmartSatellite sat) {
+        if (sat.satelliteId == 0 || _service == null) {
+            return false;
+        }
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (advancedSatelliteIdArray[slot] == sat.satelliteId && (isGatedSlot(slot) || isGatedFluidSlot(slot))) {
+                return smartSatelliteForId(sat.satelliteId) == sat;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Counts up to {@code amount} of this fluid as arrived at the machine {@code sat} pours into (null: this module's
+     * own). @return the part this module wasn't waiting for
+     */
+    private int takeFluidInFlight(FluidIdentifier fluid, int amount, PipeSmartSatellite sat) {
         if (fluid == null || amount <= 0) {
             return 0;
         }
-        int slot = fluidSlotFor(fluid);
-        if (slot < 0 || !isBufferableFluidSlot(slot) || inFlight[slot] <= 0) {
+        int slot = fluidSlotFor(fluid, sat);
+        if (slot < 0 || inFlight[slot] <= 0) {
             return amount;
         }
         int take = Math.min(amount, inFlight[slot]);
@@ -783,20 +1003,19 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
         int maxSend = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
 
-        // The gate: how much the requester's machine can actually take right now. A Smart Crafter consumer caps it by
-        // the room its tank has (see getFluidGatedAllowance); anything that is not one is ungated, so the full amount
-        // goes. This is what stops a full machine being flooded with an intermediate it cannot accept yet.
-        IRequestFluid consumer = order.getDestination();
-        int gateAllowance = consumer instanceof ModuleSmartCrafter
-                ? ((ModuleSmartCrafter) consumer).getFluidGatedAllowance(fluid)
-                : Integer.MAX_VALUE;
+        // The gate: how much the requester's machine can actually take right now. A Smart Crafter consumer, or a Smart
+        // Satellite one of them sends to, caps it by the room its tank has (see getFluidGatedAllowance); anything else
+        // is ungated, so the full amount goes. This is what stops a full machine being flooded with an intermediate it
+        // cannot accept yet.
+        FluidGate gate = fluidGateFor(order.getDestination(), order.getInformation(), fluid);
+        int gateAllowance = gate == null ? Integer.MAX_VALUE : gate.allowance(fluid);
         int wanted = Math.min(maxSend, gateAllowance);
 
         // Gate shut (machine full, or nothing released yet): park what we can in a fluid buffer and credit the consumer
-        // for it, so it is owed exactly what we send and pulls it back once the machine has room. Only a Smart Crafter
-        // consumer is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and move
-        // on to the next order, so one consumer that can't take anything doesn't hold up the others.
-        if (wanted <= 0 && consumer instanceof ModuleSmartCrafter) {
+        // for it, so it is owed exactly what we send and pulls it back once the machine has room. Only a gated consumer
+        // is owed - it alone will pull it. No buffer with room means we hold the fluid in the machine and move on to
+        // the next order, so one consumer that can't take anything doesn't hold up the others.
+        if (wanted <= 0 && gate != null) {
             // Room for any of it is enough, the rest follows on later passes: waiting for room for the whole chunk
             // could wait for ever on a small or part-filled tank, while the consumer waits for this very fluid.
             ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, 1);
@@ -818,7 +1037,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             } else {
                 _service.queueRoutedItem(item, _service.inventoryOrientation());
             }
-            ((ModuleSmartCrafter) consumer).creditFluidBuffered(fluid, drained.amount);
+            gate.creditBuffered(fluid, drained.amount);
             getFluidOrders().sendSuccessfull(drained.amount, false, item);
             onFluidResultSent(drained);
             if (outstandingFluid(fluid) <= 0) {
@@ -846,8 +1065,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         getFluidOrders().sendSuccessfull(drained.amount, false, item);
         // Tell the consumer it may count this as on the way, so its gate (allowance / in-flight) stays honest.
-        if (consumer instanceof ModuleSmartCrafter) {
-            ((ModuleSmartCrafter) consumer).onFluidGatedSend(fluid, drained.amount);
+        if (gate != null) {
+            gate.onSend(fluid, drained.amount);
         }
         onFluidResultSent(drained);
         if (outstandingFluid(fluid) <= 0) {
@@ -1025,7 +1244,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public int fluidBufferDeliveryBounced(FluidIdentifier fluid, int max) {
         int taken = 0;
         for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
-            if (fluidBuffered[slot] <= 0 || !isBufferableFluidSlot(slot) || !fluid.equals(getFluidIngredient(slot))) {
+            if (fluidBuffered[slot] <= 0 || !isGatedFluidSlot(slot) || !fluid.equals(getFluidIngredient(slot))) {
                 continue;
             }
             int take = Math.min(max - taken, fluidBuffered[slot]);
@@ -1195,7 +1414,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // With no satellite set the fluid comes to this module, which pours it into the machine it faces.
         IRequestFluid target = advancedSatelliteIdArray[slot] == 0 ? this : fluidSatelliteFor(slot);
         if (target != null) {
-            template.addIngredient(new FluidResource(getFluidIngredient(slot), fluidAmount[slot], target), null);
+            // Tagged like an item ingredient, so a provider sending to a shared Smart Satellite asks the right
+            // crafter's gate.
+            template.addIngredient(
+                    new FluidResource(getFluidIngredient(slot), fluidAmount[slot], target),
+                    ingredientInformation(slot));
         }
         // Either way the item path must not also add it. An unreachable satellite is caught by isSatelliteConnected,
         // which stops the template being offered at all, rather than quietly crafting without the fluid.
@@ -1357,6 +1580,125 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
         return null;
+    }
+
+    /* Where each ingredient goes */
+
+    /**
+     * The Smart Satellite a slot's ingredient goes to, or null when it goes to the machine this module faces (or names a
+     * satellite that can't be reached, which {@link #isSatelliteConnected} already keeps from being crafted).
+     */
+    private PipeSmartSatellite endpointOf(int slot) {
+        return advancedSatelliteIdArray[slot] == 0 ? null : smartSatelliteForId(advancedSatelliteIdArray[slot]);
+    }
+
+    /** The router a slot's ingredient is sent to: this module's, or its Smart Satellite's. Null if that can't be found. */
+    private IRouter slotRouter(int slot) {
+        if (advancedSatelliteIdArray[slot] == 0) {
+            return getRouter();
+        }
+        PipeSmartSatellite sat = endpointOf(slot);
+        return sat == null ? null : sat.getRouter();
+    }
+
+    /** Whether a slot's ingredient goes to {@code sat}'s machine, or to this module's own when {@code sat} is null. */
+    private boolean goesTo(int slot, PipeSmartSatellite sat) {
+        return sat == null ? advancedSatelliteIdArray[slot] == 0 : advancedSatelliteIdArray[slot] == sat.satelliteId;
+    }
+
+    /** Gated item slots delivered to the machine this module faces. */
+    private boolean isOwnMachineSlot(int slot) {
+        return isGatedSlot(slot) && advancedSatelliteIdArray[slot] == 0;
+    }
+
+    /** Gated item slots delivered to {@code sat}'s machine (or this module's own when null). */
+    private boolean isGatedSlotAt(int slot, PipeSmartSatellite sat) {
+        return isGatedSlot(slot) && goesTo(slot, sat);
+    }
+
+    /** The distinct reachable Smart Satellites this recipe's ingredients, items or fluids, go to. */
+    private List<PipeSmartSatellite> inputSatellites() {
+        List<PipeSmartSatellite> sats = new ArrayList<>();
+        Set<Integer> seen = new HashSet<>();
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            int id = advancedSatelliteIdArray[slot];
+            if (id == 0 || !(isGatedSlot(slot) || isGatedFluidSlot(slot)) || !seen.add(id)) {
+                continue;
+            }
+            PipeSmartSatellite sat = smartSatelliteForId(id);
+            if (sat != null) {
+                sats.add(sat);
+            }
+        }
+        return sats;
+    }
+
+    /** The distinct reachable Smart Satellites this recipe's outputs come out of. */
+    private List<PipeSmartSatellite> outputSatellites() {
+        List<PipeSmartSatellite> sats = new ArrayList<>();
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            if (getOutput(out) == null || outputSatelliteId[out] == 0) {
+                continue;
+            }
+            PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
+            if (sat != null && !sats.contains(sat)) {
+                sats.add(sat);
+            }
+        }
+        return sats;
+    }
+
+    /** The claim key of the machine a Smart Satellite faces, or null when it faces none. */
+    static MachineClaims.Key machineKeyOf(PipeSmartSatellite sat) {
+        TileEntity machine = sat == null ? null : sat.getMachineTile();
+        if (machine == null || machine.getWorldObj() == null) {
+            return null;
+        }
+        return new MachineClaims.Key(
+                machine.getWorldObj().provider.dimensionId,
+                machine.xCoord,
+                machine.yCoord,
+                machine.zCoord);
+    }
+
+    /**
+     * Every machine this recipe puts ingredients into, which is what it claims: the one it faces first, then each Smart
+     * Satellite's (a satellite on the faced machine adds nothing new). Empty when this module faces no machine.
+     */
+    private List<MachineClaims.Key> machineKeys() {
+        MachineClaims.Key faced = machineKey();
+        if (faced == null) {
+            return Collections.emptyList();
+        }
+        List<MachineClaims.Key> keys = new ArrayList<>();
+        keys.add(faced);
+        for (PipeSmartSatellite sat : inputSatellites()) {
+            MachineClaims.Key key = machineKeyOf(sat);
+            if (key != null && !keys.contains(key)) {
+                keys.add(key);
+            }
+        }
+        return keys;
+    }
+
+    /** Whether this module holds the claim on its machines. */
+    private boolean holdsClaim() {
+        return !claimedMachines.isEmpty();
+    }
+
+    /** Whether another crafter holds any of these machines. */
+    private boolean anyHeldByOther(List<MachineClaims.Key> keys) {
+        for (MachineClaims.Key key : keys) {
+            if (MachineClaims.isHeldByOther(key, this)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The world clock claims are aged by, this module's own. */
+    long claimClock() {
+        return now();
     }
 
     /** The output whose arrivals count finished sets. */
@@ -1702,8 +2044,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
             return STATUS_IDLE;
         }
-        MachineClaims.Key machine = machineKey();
-        if (machine != null && MachineClaims.isHeldByOther(machine, this, now())) {
+        if (anyHeldByOther(machineKeys())) {
             return STATUS_WAITING_CLAIM;
         }
         return setsReleased > 0 ? STATUS_RUNNING : STATUS_HOLDING;
@@ -1772,7 +2113,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             int got = RequestTree.requestPartial(
                     new ItemIdentifierStack(material.getItem(), material.getStackSize()),
                     target,
-                    new CraftingChassieInformation(slot, getPositionInt()));
+                    ingredientInformation(slot));
             if (got >= material.getStackSize()) {
                 satisfied++;
             }
@@ -1795,11 +2136,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /** Why the gate didn't hand a set over, for the "Request set" reply. */
     private String whyNotReleased() {
-        MachineClaims.Key machine = machineKey();
-        if (machine == null || _service.getRealInventory() == null) {
+        List<MachineClaims.Key> machines = machineKeys();
+        if (machines.isEmpty() || _service.getRealInventory() == null) {
             return "no machine in front of this module";
         }
-        if (MachineClaims.isHeldByOther(machine, this, now())) {
+        if (anyHeldByOther(machines)) {
             return "another crafter is using the machine";
         }
         if (countSetsThatFit(1, false) == 0) {
@@ -2003,11 +2344,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         retryLostFluids();
-        if (claimedMachine != null && _service.isNthTick(CLAIM_REFRESH_TICKS)) {
-            if (claimedMachine.equals(machineKey())) {
-                MachineClaims.refresh(claimedMachine, this, now());
+        if (holdsClaim() && _service.isNthTick(CLAIM_REFRESH_TICKS)) {
+            if (claimedMachines.equals(machineKeys())) {
+                MachineClaims.refresh(this);
             } else {
-                // The chassis was turned to face another block.
+                // The chassis was turned to face another block, or a satellite was moved or rebound.
                 releaseClaim();
                 gateDirty = true;
             }
@@ -2110,7 +2451,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (_service.getRealInventory() == null || setTooLarge || resultHeld) {
             return CrafterState.BLOCKED;
         }
-        if (awaitedMachine != null) {
+        if (awaitingMachines) {
             return CrafterState.WAITING_FOR_MACHINE;
         }
         // With sets out the crafter is working; waiting for the intermediates of the next sets isn't news yet.
@@ -2132,10 +2473,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return Math.max(0, now() - lastProgressTick);
     }
 
-    /** How many other crafters are in line for the machine this module holds or waits for. */
+    /** How many other crafters are in line for a machine this module holds or waits for. */
     public int getMachineQueueLength() {
-        MachineClaims.Key machine = claimedMachine != null ? claimedMachine : awaitedMachine;
-        return machine == null ? 0 : MachineClaims.waitingCount(machine);
+        return MachineClaims.waitingCount(this);
     }
 
     /**
@@ -2145,7 +2485,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * gives a rod and two dust; ask for rods and the dust fills its output slot after 32 crafts).
      * <p>
      * Role has no bearing on this. What matters is only whether an order is waiting for the item, in which case it is
-     * left for that order.
+     * left for that order. Results that come out of an output satellite's machine are drained the same way, unless a
+     * Smart Crafter sharing that machine is waiting for the item.
      */
     private void drainUnorderedOutputs() {
         // Only while this module has a job of its own. With nothing ordered there is no craft of ours to keep running,
@@ -2154,21 +2495,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (!hasWork()) {
             return;
         }
-        IInventory inv = null;
+        SweepTarget own = null;
         int stacks = 0;
         for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
             ItemIdentifierStack output = getOutput(i);
             if (output == null || outstandingResults(output) > 0) {
                 continue;
             }
-            if (inv == null) {
-                MachineClaims.Key machine = machineKey();
-                inv = _service.getRealInventory();
-                if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
-                    return;
+            if (own == null) {
+                own = sweepTarget(null);
+                if (own == null || MachineClaims.isHeldByOther(own.key, this)) {
+                    break;
                 }
             }
-            stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
+            stacks += takeOut(own, output.getItem(), MAX_SWEEP_STACKS - stacks);
+        }
+        for (PipeSmartSatellite sat : outputSatellites()) {
+            SweepTarget target = sweepTarget(sat);
+            if (target != null && !MachineClaims.isHeldByOther(target.key, this)) {
+                stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
+            }
         }
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
@@ -2188,10 +2534,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     private boolean registered = false;
 
-    /** Called by {@link MachineClaims} when the machine this module waited for is handed to it. */
-    void onClaimGranted(MachineClaims.Key machine) {
-        claimedMachine = machine;
-        awaitedMachine = null;
+    /** Called by {@link MachineClaims} when the machines this module waited for are handed to it. */
+    void onClaimGranted(List<MachineClaims.Key> machines) {
+        claimedMachines = new ArrayList<>(machines);
+        awaitingMachines = false;
         releasedThisTurn = false;
         claimTakenTick = now();
         sweepBeforeRelease = true;
@@ -2231,7 +2577,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     private ModuleSmartCrafter resultOwner(ItemIdentifier item) {
         boolean ours = outputIndexFor(item) >= 0;
-        if (ours && (claimedMachine != null || setsReleased > 0)) {
+        if (ours && (holdsClaim() || setsReleased > 0)) {
             return this;
         }
         ModuleSmartCrafter fallback = ours ? this : null;
@@ -2246,7 +2592,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                     || !machine.equals(other.machineKey())) {
                 continue;
             }
-            if (other.claimedMachine != null || other.setsReleased > 0) {
+            if (other.holdsClaim() || other.setsReleased > 0) {
                 return other;
             }
             if (fallback == null) {
@@ -2316,8 +2662,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * The most of this slot's result one set can yield, counting every slot that makes the same thing. A recipe may make
      * one item twice, 6 Wood Pulp plus 1 more at 80%, and both arrive as the same item credited to the first slot.
      * Dividing by the 6 alone would count more sets finished than really were, and a crafter that thinks its last set
-     * is done hands the machine over while it is still working. Counting by the 7 only ever counts too few, which the
-     * stuck-set check already settles.
+     * is done hands the machine over while it is still working.
      */
     private int mostPerSet(int output) {
         int perSet = resultPerSet(output);
@@ -2413,21 +2758,30 @@ public class ModuleSmartCrafter extends ModuleCrafter
         lastProgressTick = now();
     }
 
+    /** For the chassis: an item restored without its slot information is turned away if it is one for this machine. */
     @Override
     public boolean declinesUntrackedItem(ItemIdentifier item) {
+        return declinesUntrackedAt(null, item);
+    }
+
+    /**
+     * Whether an item that lost its slot information (restored after a restart or chunk reload, its order gone) is one
+     * of this recipe's gated ingredients for {@code sat}'s machine, or this module's own when null. Letting it in would
+     * leave a partial set behind, so it is sent on to storage instead.
+     */
+    public boolean declinesUntrackedAt(PipeSmartSatellite sat, ItemIdentifier item) {
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+            if (isGatedSlotAt(slot, sat) && getMaterials(slot).getItem().equals(item)) {
                 return true;
             }
         }
         return false;
     }
 
-    /* Smart Satellite fluid input (reported by the satellite pipe) */
+    /* Fluid slots */
 
     /**
-     * First input slot that holds this fluid. Fluid ingredients carry no slot information, so the satellite reports
-     * fluid arrivals and not-inserted events by fluid identity only.
+     * First input slot that holds this fluid, whichever machine it pours into.
      *
      * @return the slot index, or -1 if no input slot holds this fluid.
      */
@@ -2443,25 +2797,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return -1;
     }
 
-    /** A fluid delivered to one of this crafter's satellite endpoints was inserted into the machine's tank. */
-    public void fluidArrived(FluidIdentifier fluid, int amount) {
-        if (fluidSlotFor(fluid) >= 0) {
-            lastProgressTick = now();
-        }
+    /** Whether one of this recipe's fluid slots pours this fluid into {@code sat}'s machine. */
+    public boolean poursFluidInto(PipeSmartSatellite sat, FluidIdentifier fluid) {
+        return fluidSlotFor(fluid, sat) >= 0 && usesSatellite(sat);
     }
 
     /**
-     * A fluid delivered to a satellite endpoint did not fit the machine's tank; the satellite re-queues it. Refund the
-     * slot's in-flight amount so the crafter may re-request it (mirrors {@link #itemLost}).
+     * First input slot that holds this fluid and pours into {@code sat}'s machine, or this module's own when null.
+     * Fluid carries no slot information, so the machine it goes to is what tells two slots of the same fluid apart.
+     *
+     * @return the slot index, or -1 if none does.
      */
-    public void fluidNotInserted(FluidIdentifier fluid, int amount) {
-        int slot = fluidSlotFor(fluid);
-        if (slot < 0) {
-            return;
+    private int fluidSlotFor(FluidIdentifier fluid, PipeSmartSatellite sat) {
+        if (fluid == null) {
+            return -1;
         }
-        // The satellite re-queues the unfit fluid, so let the replacement through.
-        inFlight[slot] = Math.max(0, inFlight[slot] - amount);
-        allowance[slot] += amount;
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (isGatedFluidSlot(slot) && goesTo(slot, sat) && fluid.equals(getFluidIngredient(slot))) {
+                return slot;
+            }
+        }
+        return -1;
     }
 
     /* Gate */
@@ -2540,13 +2896,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
 
-        // Take what the buffers hold for the released sets, but only while this module holds the machine. A released
+        // Take what the buffers hold for the released sets, but only while this module holds its machines. A released
         // set can still be short - its ingredient may have reached a buffer after the release, and nothing else would
         // ever move it - so this can't wait for the next release. What a released set still needs delivered is exactly
         // its unsent allowance; pulling more would load sets that aren't released yet, and those would still be in
         // the machine when it is handed to the next recipe. It must respect the claim too: pulling into a machine
         // another crafter is working in is exactly the ingredient mixing the claim exists to prevent.
-        for (int slot = 0; claimedMachine != null && !ModuleCraftingBuffer.AllBuffers.isEmpty()
+        for (int slot = 0; holdsClaim() && !ModuleCraftingBuffer.AllBuffers.isEmpty()
                 && slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot) && allowance[slot] > 0 && bufferedFor(slot) > 0) {
                 pullFromBuffers(slot, allowance[slot]);
@@ -2562,22 +2918,22 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
         // The fluid twin of the loop above, for intermediates and raw fluid parked in a fluid buffer. The pull is
         // itself capped by the room the machine's tank has.
-        for (int slot = 0; claimedMachine != null && !ModuleFluidCraftingBuffer.AllBuffers.isEmpty()
+        for (int slot = 0; holdsClaim() && !ModuleFluidCraftingBuffer.AllBuffers.isEmpty()
                 && slot < INGREDIENT_SLOTS; slot++) {
-            if (isBufferableFluidSlot(slot) && allowance[slot] > 0 && fluidBufferedFor(slot) > 0) {
+            if (isGatedFluidSlot(slot) && allowance[slot] > 0 && fluidBufferedFor(slot) > 0) {
                 pullFluidFromBuffers(slot, allowance[slot]);
             }
         }
 
-        // Hand the machine over once the sets in it are done, if someone else is waiting for it. An owner that
-        // couldn't release anything (machine blocked) keeps it for a while first, so two blocked crafters don't pass it
-        // back and forth every tick. This is the only way a crafter gives the machine up mid-job: with releases capped
-        // at the intermediates on hand, a crafter never holds sets that need the machine back to finish.
+        // Hand the machines over once the sets in them are done, if someone else is waiting for one. An owner that
+        // couldn't release anything (machine blocked) keeps them for a while first, so two blocked crafters don't pass
+        // them back and forth every tick. This is the only way a crafter gives its machines up mid-job: with releases
+        // capped at the intermediates on hand, a crafter never holds sets that need the machines back to finish.
         boolean hadTurn = releasedThisTurn || now() - claimTakenTick >= SAFETY_NET_TICKS;
-        if (claimedMachine != null && hadTurn
+        if (holdsClaim() && hadTurn
                 && setsReleased == 0
                 && nothingInFlight()
-                && MachineClaims.hasOthersWaiting(claimedMachine, this)) {
+                && MachineClaims.hasOthersWaiting(this)) {
             releaseClaim();
             gateDirty = true; // queue up again behind the crafter that is waiting
         }
@@ -2606,8 +2962,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
                         + slot
                         + " "
                         + fluid
-                        + " bufferable="
-                        + isBufferableFluidSlot(slot)
+                        + " satellite="
+                        + advancedSatelliteIdArray[slot]
                         + " credit="
                         + fluidBuffered[slot]
                         + " stock="
@@ -2629,7 +2985,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                         + " setsReleased="
                         + setsReleased
                         + " claimed="
-                        + (claimedMachine != null)
+                        + holdsClaim()
                         + " covered="
                         + setsCoveredByIntermediates());
     }
@@ -2680,65 +3036,34 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (!isBeingCraftedByAnother(item) && !rawWillBeBuffered(item)) {
                 continue;
             }
-            int onHand = inFlight[slot] + bufferedFor(slot) + machineStock(item);
+            // On hand: on its way, parked in a buffer for this module, or already in the machine the slot goes to - this
+            // module's own, or its Smart Satellite's.
+            int inMachine = advancedSatelliteIdArray[slot] == 0 ? machineStock(item)
+                    : Math.max(0, itemsInSatelliteMachine(slot, item));
+            int onHand = inFlight[slot] + bufferedFor(slot) + inMachine;
             sets = Math.min(sets, onHand / material.getStackSize());
         }
         // The fluid twin of the loop above. Without it a recipe whose only intermediate is a fluid is always "ready",
         // so its raw materials are released the moment the order lands - before the fluid that gates them exists.
-        //
-        // A fluid's on-hand total is exactly where it lands:
-        // - non-satellite: this module's own machine tank, plus what is in flight and parked in a fluid buffer;
-        // - satellite-routed: the machine the slot's satellite pours into - a DIFFERENT machine from the one this
-        // module faces - and a satellite never goes through a buffer, so the tank's contents are the whole total.
-        // A slot whose Smart Satellite isn't placed, or faces no tank yet, can't be read, so it is treated as ready
-        // (holding blind would only stall) - the no-wait behaviour that path always had.
+        // A fluid's on-hand total is what is in flight, parked in a fluid buffer, and already in the tank it pours into:
+        // this module's own machine, or the slot's Smart Satellite's.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (!isFluidSlot(slot) || fluidAmount[slot] <= 0) {
+            if (!isGatedFluidSlot(slot)) {
                 continue;
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
-            if (!isFluidBeingCraftedByAnother(fluid)
-                    && !(advancedSatelliteIdArray[slot] == 0 && rawFluidWillBeBuffered(fluid))) {
+            if (!isFluidBeingCraftedByAnother(fluid) && !rawFluidWillBeBuffered(fluid)) {
                 continue;
             }
-            int onHand;
+            int inTank;
             if (advancedSatelliteIdArray[slot] == 0) {
                 IFluidHandler tank = facedTank();
-                onHand = inFlight[slot] + fluidBufferedFor(slot)
-                        + (tank == null ? 0 : heldInTank(tank, fluid, insertionSide()));
+                inTank = tank == null ? 0 : heldInTank(tank, fluid, insertionSide());
             } else {
-                int satHeld = heldInSatelliteMachine(slot, fluid);
-                if (satHeld < 0) {
-                    continue;
-                }
-                onHand = satHeld;
+                inTank = Math.max(0, heldInSatelliteMachine(slot, fluid));
             }
+            int onHand = inFlight[slot] + fluidBufferedFor(slot) + inTank;
             sets = Math.min(sets, onHand / fluidAmount[slot]);
-        }
-        // Satellite item slots: isGatedSlot excludes them (a satellite-delivered item never occupies this machine's
-        // inputs and must not count against the room check), so the first loop skips them. They still need the
-        // intermediate hold though - a satellite-delivered item that another crafter makes should keep this set's other
-        // raw materials waiting until it is actually in the satellite's machine. inFlight and the buffer are not
-        // tracked
-        // for satellite slots (both are gated on isGatedSlot), so the machine's inventory is the whole on-hand total.
-        // Hold check only: it decides when to release the set and never adds the slot to the room count.
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (advancedSatelliteIdArray[slot] == 0 || isFluidSlot(slot)) {
-                continue;
-            }
-            ItemIdentifierStack material = getMaterials(slot);
-            if (material == null || material.getStackSize() <= 0) {
-                continue;
-            }
-            ItemIdentifier item = material.getItem();
-            if (!isBeingCraftedByAnother(item)) {
-                continue;
-            }
-            int onHand = itemsInSatelliteMachine(slot, item);
-            if (onHand < 0) {
-                continue; // unobservable (no Smart Satellite machine to read): ready, as the item path always was
-            }
-            sets = Math.min(sets, onHand / material.getStackSize());
         }
         return sets;
     }
@@ -2746,9 +3071,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * How many of this item are already in the machine a satellite-routed item slot delivers into, or -1 when the slot
      * can't be observed that way: it names no satellite, no reachable Smart Satellite has its id, or that satellite's
-     * machine is not (yet) an inventory. -1 lets the caller treat the slot as ready rather
-     * than hold blind. Satellite item slots are not tracked in inFlight or the buffer (both are gated on isGatedSlot),
-     * so the machine's inventory is the whole on-hand total.
+     * machine is not (yet) an inventory.
      */
     private int itemsInSatelliteMachine(int slot, ItemIdentifier item) {
         if (advancedSatelliteIdArray[slot] == 0 || item == null) {
@@ -2770,7 +3093,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * How much of this fluid is already in the machine a satellite-routed fluid slot pours into, or -1 when the slot
      * can't be observed that way: it names no satellite, no reachable Smart Satellite has its id, or that satellite's
-     * machine is not (yet) a fluid handler. -1 lets the caller treat the slot as ready rather than hold blind.
+     * machine is not (yet) a fluid handler.
      */
     private int heldInSatelliteMachine(int slot, FluidIdentifier fluid) {
         if (advancedSatelliteIdArray[slot] == 0 || fluid == null) {
@@ -2883,27 +3206,31 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Takes the machine's claim if needed. An owner stops releasing new sets once another crafter waits, but only after
-     * it released at least once in its turn, so two crafters can't hand the machine back and forth without crafting
-     * anything.
+     * Takes the claim on every machine this recipe puts ingredients into, if it doesn't hold them yet: all of them or
+     * none. An owner stops releasing new sets once another crafter waits for one of them, but only after it released at
+     * least once in its turn, so two crafters can't hand the machines back and forth without crafting anything.
      */
     private boolean mayReleaseSets() {
-        MachineClaims.Key machine = machineKey();
-        if (machine == null) {
+        List<MachineClaims.Key> machines = machineKeys();
+        if (machines.isEmpty()) {
             return false;
         }
-        if (claimedMachine == null) {
-            if (!MachineClaims.tryClaim(machine, this, now())) {
-                awaitedMachine = machine;
+        if (holdsClaim() && !claimedMachines.equals(machines)) {
+            // A satellite moved or was rebound: what this module holds no longer covers where its ingredients go.
+            releaseClaim();
+        }
+        if (!holdsClaim()) {
+            if (!MachineClaims.tryClaimAll(machines, this)) {
+                awaitingMachines = true;
                 return false;
             }
-            claimedMachine = machine;
-            awaitedMachine = null;
+            claimedMachines = machines;
+            awaitingMachines = false;
             releasedThisTurn = false;
             claimTakenTick = now();
             sweepBeforeRelease = true;
         }
-        return !releasedThisTurn || !MachineClaims.hasOthersWaiting(claimedMachine, this);
+        return !releasedThisTurn || !MachineClaims.hasOthersWaiting(this);
     }
 
     private void releaseSets(int sets) {
@@ -2912,7 +3239,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 allowance[slot] += sets * getMaterials(slot).getStackSize();
-            } else if (isBufferableFluidSlot(slot)) {
+            } else if (isGatedFluidSlot(slot)) {
                 allowance[slot] += sets * fluidAmount[slot];
             }
         }
@@ -2924,7 +3251,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
                 pullFromBuffers(slot, sets * getMaterials(slot).getStackSize());
-            } else if (isBufferableFluidSlot(slot)) {
+            } else if (isGatedFluidSlot(slot)) {
                 pullFluidFromBuffers(slot, sets * fluidAmount[slot]);
             }
         }
@@ -2986,10 +3313,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     private void releaseClaim() {
-        if (claimedMachine != null) {
-            MachineClaims.Key machine = claimedMachine;
-            claimedMachine = null;
-            MachineClaims.release(machine, this, now());
+        if (holdsClaim()) {
+            claimedMachines = Collections.emptyList();
+            MachineClaims.releaseAll(this);
         }
         // Leftover permission from finished sets must not carry over into the next turn.
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
@@ -2999,13 +3325,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     private void stopWaiting() {
-        if (awaitedMachine != null) {
-            MachineClaims.stopWaiting(awaitedMachine, this);
-            awaitedMachine = null;
+        if (awaitingMachines) {
+            awaitingMachines = false;
+            MachineClaims.stopWaiting(this);
         }
     }
 
-    /** The block the chassis faces, which is where this module's ingredients go. */
     /** The tank of the block this module faces, or null when it doesn't hold fluid. */
     private IFluidHandler facedTank() {
         ForgeDirection dir = _service == null ? null : _service.inventoryOrientation();
@@ -3062,24 +3387,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
-    /** Ingredient slots delivered to this module's own machine. Slots sent to a satellite aren't gated. */
+    /**
+     * Item ingredient slots, which all go through the gate: delivered either to this module's own machine or to a
+     * Smart Satellite's. Fluid slots have their own gate ({@link #isGatedFluidSlot}). Which machine a slot's room is
+     * checked in is {@link #isGatedSlotAt}: a satellite-delivered item never occupies this machine's input slots, so it
+     * is simulated in the satellite's machine instead.
+     */
     private boolean isGatedSlot(int slot) {
         ItemIdentifierStack material = getMaterials(slot);
-        if (material == null || material.getStackSize() <= 0) {
-            return false;
-        }
-        if (isFluidSlot(slot)) {
-            return false; // goes to a fluid satellite, never into this module's machine
-        }
-        // Gate by the same per-slot decision the router uses, not the physical Advanced Satellite upgrade: this
-        // crafter is always per-slot (see usesPerSlotSatellites), so a slot bound to a satellite (id != 0) is
-        // delivered there and never occupies this machine's input slots - it must not count against the room check
-        // or hold its release. Gating by the upgrade flag instead left every item slot gated whenever the upgrade
-        // was absent, so the room sim tripped and nothing was ever released.
-        if (usesPerSlotSatellites()) {
-            return advancedSatelliteIdArray[slot] == 0;
-        }
-        return satelliteId == 0 || slot < 6;
+        return material != null && material.getStackSize() > 0 && !isFluidSlot(slot);
     }
 
     private static int ingredientSlot(IAdditionalTargetInformation info) {
@@ -3093,18 +3409,51 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /* Room simulation */
 
     /**
-     * Simulates inserting whole recipe sets into the machine, on top of what it already holds and what is already on
-     * its way to it.
+     * Simulates inserting whole recipe sets into every machine the recipe's items go to - the one this module faces and
+     * each Smart Satellite's - on top of what each already holds and what is already on its way to it. A set only fits
+     * when its part fits in each of them, so the answer is the smallest of theirs. Fluids are checked against their
+     * tank's room when they are sent instead ({@link #getFluidGatedAllowance}).
      *
-     * @param emptyMachine ignore the machine's current contents (used to tell "full right now" from "never fits")
+     * @param emptyMachine ignore the machines' current contents (used to tell "full right now" from "never fits")
      * @return how many sets fit, up to maxSets
      */
     private int countSetsThatFit(int maxSets, boolean emptyMachine) {
-        IInventory inv = _service.getRealInventory();
+        int sets = countSetsThatFitIn(null, maxSets, emptyMachine);
+        for (PipeSmartSatellite sat : inputSatellites()) {
+            if (sets <= 0) {
+                break;
+            }
+            sets = Math.min(sets, countSetsThatFitIn(sat, sets, emptyMachine));
+        }
+        return sets;
+    }
+
+    /**
+     * {@link #countSetsThatFit} for one machine: this module's own (sat null), or the one {@code sat} faces, filled
+     * through the face the satellite sits on. A satellite that only carries fluid has no item part to fit.
+     */
+    private int countSetsThatFitIn(PipeSmartSatellite sat, int maxSets, boolean emptyMachine) {
+        IInventory inv;
+        ForgeDirection side;
+        if (sat == null) {
+            inv = _service.getRealInventory();
+            side = insertionSide();
+        } else {
+            boolean carriesItems = false;
+            for (int slot = 0; slot < INGREDIENT_SLOTS && !carriesItems; slot++) {
+                carriesItems = isGatedSlotAt(slot, sat);
+            }
+            if (!carriesItems) {
+                return maxSets;
+            }
+            TileEntity machine = sat.getMachineTile();
+            ForgeDirection facing = sat.getMachineFacing();
+            inv = machine instanceof IInventory && facing != null ? (IInventory) machine : null;
+            side = facing == null ? ForgeDirection.UNKNOWN : facing.getOpposite();
+        }
         if (inv == null) {
             return 0;
         }
-        ForgeDirection side = insertionSide();
         int[] slots = insertableSlots(inv, side);
         ItemStack[] simulated = new ItemStack[slots.length];
         if (!emptyMachine) {
@@ -3116,14 +3465,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
         int[] perSet = new int[INGREDIENT_SLOTS];
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlot(slot)) {
-                perSet[slot] = amountPerSet(getMaterials(slot).getItem());
+            if (isGatedSlotAt(slot, sat)) {
+                perSet[slot] = amountPerSet(getMaterials(slot).getItem(), sat);
             }
         }
 
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             int pending = allowance[slot] + inFlight[slot];
-            if (pending > 0 && isGatedSlot(slot)
+            if (pending > 0 && isGatedSlotAt(slot, sat)
                     && !place(inv, side, slots, simulated, getMaterials(slot), pending, perSet[slot])) {
                 return 0;
             }
@@ -3132,7 +3481,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         int sets = 0;
         while (sets < maxSets) {
             for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-                if (isGatedSlot(slot)) {
+                if (isGatedSlotAt(slot, sat)) {
                     ItemIdentifierStack material = getMaterials(slot);
                     if (!place(inv, side, slots, simulated, material, material.getStackSize(), perSet[slot])) {
                         return sets;
@@ -3144,11 +3493,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return sets;
     }
 
-    /** Total of this item one recipe set needs, across all gated slots that hold it. */
-    private int amountPerSet(ItemIdentifier item) {
+    /** Total of this item one recipe set puts into {@code sat}'s machine (or this module's own when null). */
+    private int amountPerSet(ItemIdentifier item, PipeSmartSatellite sat) {
         int total = 0;
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+            if (isGatedSlotAt(slot, sat) && getMaterials(slot).getItem().equals(item)) {
                 total += getMaterials(slot).getStackSize();
             }
         }
@@ -3156,9 +3505,52 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Pulls this recipe's own leftover items out of the machine the chassis faces and sends them into the network,
-     * usually to storage. Other recipes' items are left alone here ({@link #sweepAllRecipesOnMachine} handles those, at
-     * claim time). Never runs while another Smart Crafter holds the machine, since two recipes can share an ingredient.
+     * One machine a sweep works on: the one this module faces ({@code sat} null), or the one a Smart Satellite faces.
+     * Swept items leave through whichever pipe is attached to it.
+     */
+    private static final class SweepTarget {
+
+        final IInventory inv;
+        /** The direction from the pipe to the machine. */
+        final ForgeDirection access;
+        /** The face of the machine the pipe inserts through. */
+        final ForgeDirection insertSide;
+        final PipeSmartSatellite sat;
+        final MachineClaims.Key key;
+
+        SweepTarget(IInventory inv, ForgeDirection access, ForgeDirection insertSide, PipeSmartSatellite sat,
+                MachineClaims.Key key) {
+            this.inv = inv;
+            this.access = access;
+            this.insertSide = insertSide;
+            this.sat = sat;
+            this.key = key;
+        }
+    }
+
+    /** The sweep target for this module's own machine (sat null) or {@code sat}'s, or null if it has no inventory. */
+    private SweepTarget sweepTarget(PipeSmartSatellite sat) {
+        if (sat == null) {
+            IInventory inv = _service.getRealInventory();
+            MachineClaims.Key key = machineKey();
+            return inv == null || key == null ? null
+                    : new SweepTarget(inv, _service.inventoryOrientation(), insertionSide(), null, key);
+        }
+        TileEntity machine = sat.getMachineTile();
+        ForgeDirection facing = sat.getMachineFacing();
+        MachineClaims.Key key = machineKeyOf(sat);
+        if (!(machine instanceof IInventory) || facing == null || key == null) {
+            return null;
+        }
+        return new SweepTarget((IInventory) machine, facing, facing.getOpposite(), sat, key);
+    }
+
+    /**
+     * Pulls this recipe's own leftover items out of the machines it uses and sends them into the network, usually to
+     * storage: all of its results and ingredients from the machine the chassis faces, its ingredients from each Smart
+     * Satellite input machine, and results no Smart Crafter is waiting for from each output satellite's machine. Other
+     * recipes' items are left alone here ({@link #sweepAllRecipesOnMachine} handles those, at claim time). A machine
+     * another Smart Crafter holds is skipped, since two recipes can share an ingredient.
      * <p>
      * Results and ingredients are taken out differently:
      * <ul>
@@ -3170,19 +3562,31 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * some side ({@link #isInputSlot}).</li>
      * </ul>
      *
-     * @return false if the machine couldn't be swept right now (not reachable, or in use by another crafter)
+     * @return false if the machine this module faces couldn't be swept right now (not reachable, or in use by another
+     *         crafter), so the sweep is tried again
      */
     private boolean sweepMachine() {
         if (!cleanupEnabled) {
             return true; // nothing to retry
         }
-        IInventory inv = _service.getRealInventory();
-        MachineClaims.Key machine = machineKey();
-        if (inv == null || machine == null || MachineClaims.isHeldByOther(machine, this, now())) {
+        SweepTarget own = sweepTarget(null);
+        if (own == null || MachineClaims.isHeldByOther(own.key, this)) {
             return false;
         }
-        int stacks = sweepResult(inv);
-        stacks += sweepIngredients(inv, MAX_SWEEP_STACKS - stacks);
+        int stacks = sweepResult(own);
+        stacks += sweepIngredients(own, MAX_SWEEP_STACKS - stacks);
+        for (PipeSmartSatellite sat : inputSatellites()) {
+            SweepTarget target = sweepTarget(sat);
+            if (target != null && !MachineClaims.isHeldByOther(target.key, this)) {
+                stacks += sweepIngredients(target, MAX_SWEEP_STACKS);
+            }
+        }
+        for (PipeSmartSatellite sat : outputSatellites()) {
+            SweepTarget target = sweepTarget(sat);
+            if (target != null && !MachineClaims.isHeldByOther(target.key, this)) {
+                stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
+            }
+        }
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
@@ -3190,14 +3594,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Clears what every Smart Crafter recipe on this machine left in it, this module's included. Called once per claim,
-     * before this module releases anything, so none of the new sets' ingredients are in the machine yet and a shared
-     * ingredient can't be taken by mistake.
+     * Clears what every Smart Crafter recipe left in the machines this module just claimed, this module's included.
+     * Called once per claim, before this module releases anything, so none of the new sets' ingredients are in the
+     * machines yet and a shared ingredient can't be taken by mistake.
      * <p>
-     * Each recipe is swept by its own module, so the items leave through that module's chassis and follow that recipe's
-     * Cleanup setting. Only Smart Crafter recipes are touched: an ordinary crafting module takes no claim, so it could
-     * be mid-craft on this machine. A result some order is still waiting for is left in place: its crafter extracts it
-     * for that order, and sending it to storage would strand the order.
+     * Each recipe is swept by its own module, so the items leave through that module's chassis or satellite and follow
+     * that recipe's Cleanup setting. Only Smart Crafter recipes are touched: an ordinary crafting module takes no claim,
+     * so it could be mid-craft on this machine. A result some order is still waiting for is left in place: its crafter
+     * extracts it for that order, and sending it to storage would strand the order.
      * <p>
      * A recipe that still has work (this module's included, since it only claimed because it has a job) keeps its
      * ingredients: it handed the machine over or is taking it back mid-job, those ingredients were delivered for that
@@ -3205,54 +3609,113 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * has its ingredients cleared.
      */
     private void sweepAllRecipesOnMachine() {
-        MachineClaims.Key machine = claimedMachine;
-        if (machine == null) {
+        if (!holdsClaim()) {
             return;
         }
-        sweepLeftovers(!recipeHasWork());
-        for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
-            if (other != this && other._service != null
-                    && other.getWorld() != null
-                    && machine.equals(other.machineKey())) {
-                other.sweepLeftovers(!other.recipeHasWork());
+        for (MachineClaims.Key machine : claimedMachines) {
+            sweepLeftoversAt(machine, !recipeHasWork());
+            for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
+                if (other != this && other._service != null && other.getWorld() != null) {
+                    other.sweepLeftoversAt(machine, !other.recipeHasWork());
+                }
             }
         }
     }
 
     /**
-     * This recipe's part of {@link #sweepAllRecipesOnMachine}: results no order is waiting for, and its ingredients too
-     * if asked.
+     * This recipe's part of {@link #sweepAllRecipesOnMachine} for one machine, if it uses that machine: results no
+     * order is waiting for, and its ingredients too if asked.
      */
-    private void sweepLeftovers(boolean ingredientsToo) {
-        IInventory inv = _service.getRealInventory();
-        if (!cleanupEnabled || inv == null) {
+    private void sweepLeftoversAt(MachineClaims.Key machine, boolean ingredientsToo) {
+        if (!cleanupEnabled) {
             return;
         }
         int stacks = 0;
-        for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
-            ItemIdentifierStack output = getOutput(i);
-            if (output != null && outstandingResults(output) <= 0) {
-                stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
+        if (machine.equals(machineKey())) {
+            SweepTarget own = sweepTarget(null);
+            if (own != null) {
+                for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
+                    ItemIdentifierStack output = getOutput(i);
+                    if (output != null && outstandingResults(output) <= 0) {
+                        stacks += takeOut(own, output.getItem(), MAX_SWEEP_STACKS - stacks);
+                    }
+                }
+                if (ingredientsToo) {
+                    stacks += sweepIngredients(own, MAX_SWEEP_STACKS - stacks);
+                }
             }
         }
-        if (ingredientsToo) {
-            stacks += sweepIngredients(inv, MAX_SWEEP_STACKS - stacks);
+        List<PipeSmartSatellite> sats = new ArrayList<>(inputSatellites());
+        for (PipeSmartSatellite sat : outputSatellites()) {
+            if (!sats.contains(sat)) {
+                sats.add(sat);
+            }
+        }
+        for (PipeSmartSatellite sat : sats) {
+            if (!machine.equals(machineKeyOf(sat))) {
+                continue;
+            }
+            SweepTarget target = sweepTarget(sat);
+            if (target == null) {
+                continue;
+            }
+            stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
+            if (ingredientsToo) {
+                stacks += sweepIngredients(target, MAX_SWEEP_STACKS);
+            }
         }
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
     }
 
-    /** @return how many stacks were taken out */
-    private int sweepResult(IInventory inv) {
+    /** All of this recipe's results in the machine this module faces. @return how many stacks were taken out */
+    private int sweepResult(SweepTarget target) {
         int stacks = 0;
         for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
             ItemIdentifierStack output = getOutput(i);
             if (output != null) {
-                stacks += takeOut(inv, output.getItem(), MAX_SWEEP_STACKS - stacks);
+                stacks += takeOut(target, output.getItem(), MAX_SWEEP_STACKS - stacks);
             }
         }
         return stacks;
+    }
+
+    /**
+     * This recipe's results that come out of a Smart Satellite's machine and that no Smart Crafter using that machine
+     * for the same result is waiting for. Another recipe may deliver the same item into a shared output bus, so this
+     * recipe having no order for it isn't enough. @return how many stacks were taken out
+     */
+    private int sweepUnwantedResults(SweepTarget target, int maxStacks) {
+        int stacks = 0;
+        for (int out = 0; out < OUTPUT_SLOTS && stacks < maxStacks; out++) {
+            ItemIdentifierStack output = getOutput(out);
+            if (output == null || target.sat == null || outputSatelliteId[out] != target.sat.satelliteId
+                    || anyCrafterWaitsFor(target.sat, output.getItem())) {
+                continue;
+            }
+            stacks += takeOut(target, output.getItem(), maxStacks - stacks);
+        }
+        return stacks;
+    }
+
+    /** Whether some Smart Crafter whose output comes out of {@code sat}'s machine still has orders for this item. */
+    private static boolean anyCrafterWaitsFor(PipeSmartSatellite sat, ItemIdentifier item) {
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter._service == null) {
+                continue;
+            }
+            for (int out = 0; out < OUTPUT_SLOTS; out++) {
+                ItemIdentifierStack output = crafter.getOutput(out);
+                if (output != null && crafter.outputSatelliteId[out] == sat.satelliteId
+                        && crafter.isOurResult(item, output)
+                        && crafter.outstandingResults(output) > 0
+                        && crafter.smartSatelliteForId(sat.satelliteId) == sat) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -3262,12 +3725,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
      *
      * @return how many stacks were taken out
      */
-    private int takeOut(IInventory inv, ItemIdentifier item, int maxStacks) {
+    private int takeOut(SweepTarget target, ItemIdentifier item, int maxStacks) {
+        IInventory inv = target.inv;
         IInventory extractable = inv instanceof ISidedInventory
                 ? new SidedInventoryMinecraftAdapter((ISidedInventory) inv, ForgeDirection.UNKNOWN, true)
                 : inv;
-        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
-                .getInventoryUtil(extractable, _service.inventoryOrientation());
+        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory.getInventoryUtil(extractable, target.access);
         int stacks = 0;
         int left = util.itemCount(item);
         while (left > 0 && stacks < maxStacks) {
@@ -3277,14 +3740,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             left -= taken.stackSize;
             stacks++;
-            sendSwept(taken);
+            sendSwept(target, taken);
         }
         return stacks;
     }
 
-    /** @return how many stacks were taken out */
-    private int sweepIngredients(IInventory inv, int maxStacks) {
-        ForgeDirection ourSide = insertionSide();
+    /** This recipe's ingredients for the target machine. @return how many stacks were taken out */
+    private int sweepIngredients(SweepTarget target, int maxStacks) {
+        IInventory inv = target.inv;
         int stacks = 0;
         for (int machineSlot = 0; machineSlot < inv.getSizeInventory(); machineSlot++) {
             if (stacks >= maxStacks) {
@@ -3294,13 +3757,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (stack == null || stack.stackSize <= 0) {
                 continue;
             }
-            if (!isIngredient(stack) || !isInputSlot(inv, machineSlot, stack, ourSide)) {
+            if (!isIngredientFor(stack, target.sat) || !isInputSlot(inv, machineSlot, stack, target.insertSide)) {
                 continue;
             }
             ItemStack taken = inv.decrStackSize(machineSlot, stack.stackSize);
             if (taken != null && taken.stackSize > 0) {
                 stacks++;
-                sendSwept(taken);
+                sendSwept(target, taken);
             }
         }
         return stacks;
@@ -3336,17 +3799,31 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
-    private boolean isIngredient(ItemStack stack) {
+    /** Whether the stack is one of this recipe's item ingredients for {@code sat}'s machine (own when null). */
+    private boolean isIngredientFor(ItemStack stack, PipeSmartSatellite sat) {
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlot(slot) && isSameItem(stack, getMaterials(slot).getItem().makeNormalStack(1))) {
+            if (isGatedSlotAt(slot, sat) && isSameItem(stack, getMaterials(slot).getItem().makeNormalStack(1))) {
                 return true;
             }
         }
         return false;
     }
 
-    private void sendSwept(ItemStack stack) {
-        _service.queueRoutedItem(SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack), ForgeDirection.UP);
+    /**
+     * Puts a swept stack into the network with no destination, so it goes to storage: from the chassis, or out through
+     * the target's Smart Satellite. A satellite is jammed as a destination, since it sinks into the very machine the
+     * stack was just taken from.
+     */
+    private void sendSwept(SweepTarget target, ItemStack stack) {
+        if (target.sat == null) {
+            _service.queueRoutedItem(SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack), ForgeDirection.UP);
+            return;
+        }
+        IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack);
+        item.getJamList().add(target.sat.getRouter().getSimpleID());
+        item.setDestination(-1);
+        item.setTransportMode(TransportMode.Active);
+        target.sat.queueRoutedItem(item, target.access);
     }
 
     private ForgeDirection insertionSide() {

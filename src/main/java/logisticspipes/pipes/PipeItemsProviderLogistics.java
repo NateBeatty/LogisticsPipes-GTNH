@@ -225,7 +225,7 @@ public class PipeItemsProviderLogistics extends CoreRoutedPipe implements IProvi
             routedItem.setTransportMode(TransportMode.Active);
             if (buffer != null) {
                 buffer.reserve(item, sent);
-                ((ModuleSmartCrafter) gate).creditBuffered(info, sent);
+                ModuleSmartCrafter.gatedCrafter(gate, info).creditBuffered(info, sent);
                 routedItem.setDestination(buffer.getBufferRouter());
                 routedItem.setAdditionalTargetInformation(buffer.getTargetInformation());
             } else {

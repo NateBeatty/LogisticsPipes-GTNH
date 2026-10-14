@@ -57,16 +57,17 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         LogisticsFluidOrder order = getFluidOrderManager().peekAtTopRequest(ResourceType.PROVIDER);
         int amountToSend = Math.min(order.getAmount(), Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY / 2);
         int destination = order.getRouter().getSimpleID();
-        // A Smart Crafter consumer only lets in what its machine can take right now, the same as the item providers and
-        // the Smart Crafter's own fluid outputs treat it. With its gate shut the fluid goes to a fluid buffer, credited
-        // to the consumer, which pulls it once a set is released; with no buffer room the order goes to the back of the
-        // queue, so one consumer that can't take anything doesn't hold up every order behind it. Anything that is not a
-        // Smart Crafter has no fluid gate and takes the full amount, as it always has.
-        IRequestFluid consumer = order.getDestination();
-        ModuleSmartCrafter gated = consumer instanceof ModuleSmartCrafter ? (ModuleSmartCrafter) consumer : null;
+        // A Smart Crafter consumer - its own machine, or a Smart Satellite it sends to - only lets in what the machine
+        // can take right now, the same as the item providers and the Smart Crafter's own fluid outputs treat it. With
+        // its gate shut the fluid goes to a fluid buffer, credited to the consumer, which pulls it once a set is
+        // released; with no buffer room the order goes to the back of the queue, so one consumer that can't take
+        // anything doesn't hold up every order behind it. Anything else has no fluid gate and takes the full amount, as
+        // it always has.
+        ModuleSmartCrafter.FluidGate gated = ModuleSmartCrafter
+                .fluidGateFor(order.getDestination(), order.getInformation(), order.getFluid());
         ModuleFluidCraftingBuffer toBuffer = null;
         if (gated != null) {
-            int allowed = gated.getFluidGatedAllowance(order.getFluid());
+            int allowed = gated.allowance(order.getFluid());
             if (allowed <= 0) {
                 // Room for any of it is enough: the rest follows on later passes, the same as a gate that only lets
                 // part through. Waiting for room for the whole chunk could wait for ever on a small buffer.
@@ -181,16 +182,16 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
      * counted as on its way (as the item providers report with {@code onGatedSend}), fluid parked in a buffer as owed
      * to it. A buffer also keeps room for it until it arrives, so the next sender isn't told the same room.
      */
-    private static void reportGatedSend(ModuleSmartCrafter gated, ModuleFluidCraftingBuffer toBuffer,
+    private static void reportGatedSend(ModuleSmartCrafter.FluidGate gated, ModuleFluidCraftingBuffer toBuffer,
             FluidIdentifier fluid, int amount) {
         if (gated == null || amount <= 0) {
             return;
         }
         if (toBuffer != null) {
             toBuffer.reserve(fluid, amount);
-            gated.creditFluidBuffered(fluid, amount);
+            gated.creditBuffered(fluid, amount);
         } else {
-            gated.onFluidGatedSend(fluid, amount);
+            gated.onSend(fluid, amount);
         }
     }
 
