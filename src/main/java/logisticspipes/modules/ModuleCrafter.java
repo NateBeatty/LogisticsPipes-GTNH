@@ -610,15 +610,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             if (addIngredientForSlot(template, i)) {
                 continue;
             }
-            IResource req;
-            if (getUpgradeManager().isFuzzyUpgrade() && fuzzyCraftingFlagArray[i].getBitSet().nextSetBit(0) != -1) {
-                DictResource dict;
-                req = dict = new DictResource(resourceStack, target[i]);
-                dict.loadFromBitSet(fuzzyCraftingFlagArray[i].getBitSet());
-            } else {
-                req = new ItemResource(resourceStack, target[i]);
-            }
-            template.addIngredient(req, ingredientInformation(i));
+            template.addIngredient(ingredientResource(i, resourceStack, target[i]), ingredientInformation(i));
         }
 
         int liquidCrafter = getUpgradeManager().getFluidCrafter();
@@ -657,6 +649,19 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         addTemplateByproducts(template);
 
         return template;
+    }
+
+    /**
+     * What the planner asks for to fill an item ingredient slot: the exact item, or a fuzzy match when the slot has
+     * fuzzy flags set. Split out so a subclass can loosen the match for its own slots.
+     */
+    protected IResource ingredientResource(int slot, ItemIdentifierStack resourceStack, IRequestItems target) {
+        if (getUpgradeManager().isFuzzyUpgrade() && fuzzyCraftingFlagArray[slot].getBitSet().nextSetBit(0) != -1) {
+            DictResource dict = new DictResource(resourceStack, target);
+            dict.loadFromBitSet(fuzzyCraftingFlagArray[slot].getBitSet());
+            return dict;
+        }
+        return new ItemResource(resourceStack, target);
     }
 
     /**
@@ -1508,7 +1513,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             AdjacentTile tile = null;
             for (AdjacentTile crafter : resultSourcesFor(nextOrder, crafters)) {
                 tile = crafter;
-                extracted = extract(tile, nextOrder.getResource(), maxtosend);
+                extracted = extract(tile, resultToExtract(nextOrder), maxtosend);
                 if (extracted != null && extracted.stackSize > 0) {
                     break;
                 }
@@ -1712,7 +1717,21 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     private boolean doesExtractionMatch(LogisticsItemOrder nextOrder, ItemIdentifier extractedID) {
         return nextOrder.getResource().getItem().equals(extractedID)
                 || (this.getUpgradeManager().isFuzzyUpgrade() && nextOrder.getResource().getBitSet().nextSetBit(0) != -1
-                        && nextOrder.getResource().matches(extractedID, IResource.MatchSettings.NORMAL));
+                        && nextOrder.getResource().matches(extractedID, IResource.MatchSettings.NORMAL))
+                || extractedFillsOrder(nextOrder, extractedID);
+    }
+
+    /**
+     * What to take out of the machine for an order: the ordered item itself. Split out so a subclass can take its result
+     * in whatever state the machine makes it.
+     */
+    protected IResource resultToExtract(LogisticsItemOrder order) {
+        return order.getResource();
+    }
+
+    /** Whether an extracted item other than the ordered one still fills the order. None does here. */
+    protected boolean extractedFillsOrder(LogisticsItemOrder order, ItemIdentifier extracted) {
+        return false;
     }
 
     private boolean cachedAreAllOrderesToBuffer;

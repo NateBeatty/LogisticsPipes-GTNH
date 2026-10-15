@@ -598,6 +598,11 @@ public class ProxyManager {
                     }
 
                     @Override
+                    public boolean holdsCharge(ItemStack stack) {
+                        return false;
+                    }
+
+                    @Override
                     public boolean isFullyCharged(ItemStack stack) {
                         return false;
                     }

@@ -52,6 +52,16 @@ public class IC2Proxy implements IIC2Proxy {
     }
 
     /**
+     * @param stack The stack to check.
+     * @return Boolean, true if stack is an electric item with room for charge. GregTech's meta items are all electric
+     *         items, but only the ones that store energy (batteries, crystals) have a max charge.
+     */
+    @Override
+    public boolean holdsCharge(ItemStack stack) {
+        return isElectricItem(stack) && getMaxCharge(stack) > 0;
+    }
+
+    /**
      * @param stack The stack to get charge for.
      * @return Int value of current charge on electric item.
      */

@@ -33,6 +33,8 @@ public class SmartCrafterSetting extends ModuleCoordinatesPacket {
     public static final int OUTPUT_SATELLITE = 6;
     /** Litres for a fluid ingredient or result slot (index is the inventory slot). */
     public static final int FLUID_AMOUNT = 7;
+    /** Module-wide: ingredients that wear down or hold charge match whatever their damage and NBT. */
+    public static final int IGNORE_DURABILITY = 8;
 
     @Getter
     @Setter

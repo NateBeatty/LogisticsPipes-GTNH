@@ -159,6 +159,12 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         return inv == null ? 0 : inv.itemCount(item);
     }
 
+    /** Everything this buffer holds, by kind, for a crafter matching an ingredient in any of its states. */
+    public Map<ItemIdentifier, Integer> getStock() {
+        IInventoryUtil inv = inventory();
+        return inv == null ? Collections.emptyMap() : inv.getItemsAndCount();
+    }
+
     /** Whether there is space for this item, which decides if an intermediate may be routed here. */
     public boolean hasRoomFor(ItemIdentifier item, int count) {
         return count > 0 && roomFor(item, count) >= count;

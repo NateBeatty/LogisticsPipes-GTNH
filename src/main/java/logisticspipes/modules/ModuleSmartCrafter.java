@@ -15,6 +15,7 @@ import net.minecraft.client.renderer.texture.IIconRegister;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.inventory.ISidedInventory;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
@@ -175,6 +176,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private static final int DEFAULT_FLUID_AMOUNT = 1000;
     /** Master switch for the built-in sweeps. Off leaves whatever is in the machine alone. */
     private boolean cleanupEnabled = true;
+    /**
+     * Ingredients that wear down or hold charge match their item whatever its damage and NBT, so a Lapotron Crystal
+     * from storage, one fresh out of its machine and the one the recipe was set up with all count as the same thing.
+     * Off by default: until it is ticked, ingredients match exactly, as they always have.
+     */
+    private boolean ignoreDurability = false;
 
     /** True when not even one recipe set fits in an empty machine, so the gate can never open. */
     @Getter
@@ -280,7 +287,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
         Set<ItemIdentifier> items = new HashSet<>();
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (isGatedSlot(slot)) {
-                items.add(getMaterials(slot).getItem());
+                ItemIdentifier material = getMaterials(slot).getItem();
+                items.add(material);
+                if (loosens(material)) {
+                    // The router also looks interests up by this key, so it catches every damage and NBT of the item.
+                    items.add(material.getUndamaged().getIgnoringNBT());
+                }
             }
         }
         return items;
@@ -295,7 +307,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlot(slot) && getMaterials(slot).getItem().equals(item)) {
+            if (isGatedSlot(slot) && sameIngredient(getMaterials(slot).getItem(), item)) {
                 gateDirty = true;
                 return;
             }
@@ -344,7 +356,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         int taken = 0;
         for (int slot = 0; slot < INGREDIENT_SLOTS && taken < max; slot++) {
             ItemIdentifierStack material = getMaterials(slot);
-            if (buffered[slot] <= 0 || material == null || !material.getItem().equals(item)) {
+            if (buffered[slot] <= 0 || material == null || !sameIngredient(material.getItem(), item)) {
                 continue;
             }
             int take = Math.min(max - taken, buffered[slot]);
@@ -446,14 +458,38 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (buffered[slot] <= 0) {
             return 0;
         }
-        return Math.min(buffered[slot], bufferStock(getMaterials(slot).getItem()));
+        int stock = 0;
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+            for (ItemIdentifier kind : bufferedKinds(buffer, slot)) {
+                stock += buffer.getAvailable(kind);
+            }
+        }
+        return Math.min(buffered[slot], stock);
+    }
+
+    /**
+     * The item kinds in a buffer that fill this slot: just the slot's item, or with Ignore durability/charge every
+     * damage and NBT of it the buffer holds.
+     */
+    private List<ItemIdentifier> bufferedKinds(ModuleCraftingBuffer buffer, int slot) {
+        ItemIdentifier material = getMaterials(slot).getItem();
+        if (!loosens(material)) {
+            return Collections.singletonList(material);
+        }
+        List<ItemIdentifier> kinds = new ArrayList<>();
+        for (ItemIdentifier held : buffer.getStock().keySet()) {
+            if (sameIngredient(material, held)) {
+                kinds.add(held);
+            }
+        }
+        return kinds;
     }
 
     /** How much of an item this module has credit for across its slots, for a buffer working out its orphans. */
     public int getBufferedCredit(ItemIdentifier item) {
         int total = 0;
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (buffered[slot] > 0 && getMaterials(slot) != null && getMaterials(slot).getItem().equals(item)) {
+            if (buffered[slot] > 0 && getMaterials(slot) != null && sameIngredient(getMaterials(slot).getItem(), item)) {
                 total += buffered[slot];
             }
         }
@@ -489,19 +525,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (target == null) {
             return;
         }
-        ItemIdentifier item = getMaterials(slot).getItem();
         int left = wanted;
         for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
-            if (left <= 0) {
-                break;
-            }
-            int sent = buffer.sendTo(item, left, target.getSimpleID(), ingredientInformation(slot));
-            if (sent > 0) {
-                left -= sent;
-                buffered[slot] = Math.max(0, buffered[slot] - sent);
-                allowance[slot] = Math.max(0, allowance[slot] - sent);
-                inFlight[slot] += sent;
-                lastProgressTick = now();
+            for (ItemIdentifier item : bufferedKinds(buffer, slot)) {
+                if (left <= 0) {
+                    return;
+                }
+                int sent = buffer.sendTo(item, left, target.getSimpleID(), ingredientInformation(slot));
+                if (sent > 0) {
+                    left -= sent;
+                    buffered[slot] = Math.max(0, buffered[slot] - sent);
+                    allowance[slot] = Math.max(0, allowance[slot] - sent);
+                    inFlight[slot] += sent;
+                    lastProgressTick = now();
+                }
             }
         }
     }
@@ -1372,6 +1409,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         normalising = true; // rewriting a slot below calls back in here
         try {
+            dropEmptyTags();
             normaliseFluidSlots();
         } finally {
             normalising = false;
@@ -1379,6 +1417,22 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     private boolean normalising = false;
+
+    /**
+     * Strips an empty NBT tag from every ingredient and result. An item with an empty tag is the same item as one with
+     * none, but LP tells them apart: NEI's IC2 crystals carry an empty tag, the ones a machine makes carry none, so a
+     * recipe imported with the empty one asked its machine for an item it never makes and waited for ever.
+     */
+    private void dropEmptyTags() {
+        for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
+            ItemIdentifierStack stack = getMaterials(slot);
+            if (stack != null && stack.getItem().tag != null && stack.getItem().tag.hasNoTags()) {
+                _dummyInventory.setInventorySlotContents(
+                        slot,
+                        stack.getItem().getIgnoringNBT().unsafeMakeNormalStack(stack.getStackSize()));
+            }
+        }
+    }
 
     private void normaliseFluidSlots() {
         for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
@@ -1539,29 +1593,71 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * result comes out of the machine that satellite faces and enters the network through the satellite; otherwise it
      * comes from the machines the chassis faces, as always. The order and set accounting (see
      * {@link #onResultExtracted}) stays in the crafter either way.
+     * <p>
+     * The modules of a chassis share one order queue, and the order at the top is looked at by whichever module's turn
+     * it is, often one whose recipe doesn't make it. That module must look where the recipe that does make it sends its
+     * result. Looking only in the faced machine, it finds nothing and defers the order; since every module that finds
+     * nothing turns the queue by one, the turns and the queue can stay in step, and the result's own module may then
+     * never see its order at all while its result sits in the satellite's machine.
      */
     @Override
     protected List<AdjacentTile> resultSourcesFor(LogisticsItemOrder order, List<AdjacentTile> faced) {
-        int out = outputIndexFor(order.getResource().getItem());
-        if (out < 0 || outputSatelliteId[out] == 0) {
+        ItemIdentifier item = order.getResource().getItem();
+        List<AdjacentTile> sources = new ArrayList<>();
+        List<PipeSmartSatellite> seen = new ArrayList<>();
+        boolean fromFaced = false;
+        for (ModuleSmartCrafter maker : chassisMakersOf(item)) {
+            int out = maker.outputIndexFor(item);
+            PipeSmartSatellite sat = maker.outputSatelliteId[out] == 0 ? null
+                    : maker.smartSatelliteForId(maker.outputSatelliteId[out]);
+            AdjacentTile source = satelliteResultSource(sat);
+            if (source == null) {
+                fromFaced = true;
+            } else if (!seen.contains(sat)) {
+                seen.add(sat);
+                sources.add(source);
+            }
+        }
+        if (sources.isEmpty()) {
             return faced;
         }
-        PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
+        if (fromFaced) {
+            sources.addAll(faced);
+        }
+        return sources;
+    }
+
+    /** The Smart Crafters in this chassis whose recipe makes {@code item}, this one first. */
+    private List<ModuleSmartCrafter> chassisMakersOf(ItemIdentifier item) {
+        List<ModuleSmartCrafter> makers = new ArrayList<>();
+        if (outputIndexFor(item) >= 0) {
+            makers.add(this);
+        }
+        for (ModuleSmartCrafter other : AllCrafters) {
+            if (other != this && other._service == _service && other.outputIndexFor(item) >= 0) {
+                makers.add(other);
+            }
+        }
+        return makers;
+    }
+
+    /**
+     * The machine a Smart Satellite faces as a result source that sends through that satellite, or null when there is
+     * no satellite or it faces no machine right now (the result is then looked for in the faced machine).
+     */
+    private static AdjacentTile satelliteResultSource(PipeSmartSatellite sat) {
         if (sat == null) {
-            return faced;
+            return null;
         }
         ForgeDirection facing = sat.getMachineFacing();
-        if (facing == null) {
-            return faced;
-        }
         TileEntity machine = sat.getMachineTile();
-        if (machine == null) {
-            return faced;
+        if (facing == null || machine == null) {
+            return null;
         }
         AdjacentTile source = new AdjacentTile(machine, facing);
         // The result enters the network through the satellite, out of the face its machine is on.
         source.sender = sat;
-        return Collections.singletonList(source);
+        return source;
     }
 
     /**
@@ -1897,7 +1993,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             statusItem = missing != null ? missing.makeStack(1) : lastStatusItem;
         }
         packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
-                .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled).setStatus(status)
+                .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled).setIgnoreDurability(ignoreDurability).setStatus(status)
                 .setStatusItem(statusItem).setSetsReleased(setsReleased);
         packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
                 .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
@@ -1926,6 +2022,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
         cleanupEnabled = packet.isCleanupEnabled();
+        ignoreDurability = packet.isIgnoreDurability();
         lastStatus = packet.getStatus();
         lastStatusItem = packet.getStatusItem();
         setsReleased = packet.getSetsReleased();
@@ -1977,12 +2074,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
             case SmartCrafterSetting.CLEANUP:
                 cleanupEnabled = value != 0;
                 return;
+            case SmartCrafterSetting.IGNORE_DURABILITY:
+                ignoreDurability = value != 0;
+                gateDirty = true;
+                return;
             default:
         }
     }
 
     public boolean isCleanupEnabled() {
         return cleanupEnabled;
+    }
+
+    public boolean isIgnoreDurability() {
+        return ignoreDurability;
     }
 
     @Override
@@ -2168,6 +2273,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     public void readFromNBT(NBTTagCompound nbttagcompound) {
         super.readFromNBT(nbttagcompound);
         cleanupEnabled = !nbttagcompound.hasKey("SmartCleanup") || nbttagcompound.getBoolean("SmartCleanup");
+        ignoreDurability = nbttagcompound.getBoolean("SmartIgnoreDurability");
         int[] roles = nbttagcompound.getIntArray("SmartOutputRole");
         int[] chances = nbttagcompound.getIntArray("SmartOutputChance");
         int[] satellites = nbttagcompound.getIntArray("SmartOutputSatellite");
@@ -2219,6 +2325,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         nbttagcompound.setIntArray("SmartOutputSatellite", outputSatelliteId);
         nbttagcompound.setIntArray("SmartFluidAmount", fluidAmount);
         nbttagcompound.setBoolean("SmartCleanup", cleanupEnabled);
+        nbttagcompound.setBoolean("SmartIgnoreDurability", ignoreDurability);
         if (!nonConsumed.isEmpty() && nonConsumedFor != null) {
             NBTTagList list = new NBTTagList();
             for (ItemIdentifier item : nonConsumed) {
@@ -2719,6 +2826,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (slot >= 0) {
             inFlight[slot] = Math.max(0, inFlight[slot] - item.getStackSize());
             lastProgressTick = now();
+            if (wearsOrCharges(item.getItem())) {
+                diag(
+                        "arrived slot " + slot + ": " + describe(item.getItem()) + " | recipe wants "
+                                + describe(getMaterials(slot) == null ? null : getMaterials(slot).getItem()));
+            }
         }
     }
 
@@ -2771,7 +2883,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     public boolean declinesUntrackedAt(PipeSmartSatellite sat, ItemIdentifier item) {
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlotAt(slot, sat) && getMaterials(slot).getItem().equals(item)) {
+            if (isGatedSlotAt(slot, sat) && sameIngredient(getMaterials(slot).getItem(), item)) {
                 return true;
             }
         }
@@ -3087,7 +3199,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
                 .getInventoryUtil((IInventory) machine, ForgeDirection.UNKNOWN);
-        return util == null ? 0 : util.itemCount(item);
+        return util == null ? 0 : countOf(util, item);
     }
 
     /**
@@ -3146,7 +3258,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             for (ItemIdentifierStack result : crafter.getConfiguredCraftResults()) {
-                if (result.getItem().equals(item) && crafter.outstandingResults(result) > 0) {
+                if (sameIngredient(item, result.getItem()) && crafter.outstandingResults(result) > 0) {
                     return true;
                 }
             }
@@ -3202,7 +3314,140 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory
                 .getInventoryUtil(inv, _service.inventoryOrientation());
-        return util == null ? 0 : util.itemCount(item);
+        return util == null ? 0 : countOf(util, item);
+    }
+
+    /** How many of an ingredient an inventory holds, counting every damage and NBT of it when the match is loosened. */
+    private int countOf(IInventoryUtil util, ItemIdentifier material) {
+        if (!loosens(material)) {
+            return util.itemCount(material);
+        }
+        int total = 0;
+        for (Map.Entry<ItemIdentifier, Integer> entry : util.getItemsAndCount().entrySet()) {
+            if (sameIngredient(material, entry.getKey())) {
+                total += entry.getValue();
+            }
+        }
+        return total;
+    }
+
+    /* Ignore durability/charge */
+
+    // TEMPORARY [LapotronDiag]: shows the exact damage and NBT of worn or charged ingredients and results, to see what
+    // separates a recipe's crystal from the ones the network has. Remove once that is known.
+
+    /** Machine contents already reported as not matching a result, so a stuck item isn't logged every tick. */
+    private final Set<ItemIdentifier> diagLogged = new HashSet<>();
+
+    private void diag(String message) {
+        LogisticsPipes.log.info("[LapotronDiag] " + getX() + "," + getY() + "," + getZ() + " " + message);
+    }
+
+    private static String describe(ItemIdentifier item) {
+        if (item == null) {
+            return "nothing";
+        }
+        return item.getFriendlyName() + " id=" + Item.getIdFromItem(item.item) + " dmg="
+                + item.itemDamage + " nbt=" + (item.tag == null ? "none" : item.tag.toString());
+    }
+
+    /**
+     * Whether an item's damage and NBT only say how worn or charged it is: something that wears down, or an electric
+     * item that stores charge (IC2 crystals and batteries, GT batteries).
+     */
+    private static boolean wearsOrCharges(ItemIdentifier item) {
+        ItemStack stack = item.unsafeMakeNormalStack(1);
+        return stack.isItemStackDamageable() || SimpleServiceLocator.IC2Proxy.holdsCharge(stack);
+    }
+
+    /** Whether this ingredient's match is loosened by Ignore durability/charge. */
+    private boolean loosens(ItemIdentifier material) {
+        return ignoreDurability && material != null && wearsOrCharges(material);
+    }
+
+    /**
+     * Whether {@code item} fills an ingredient slot holding {@code material}. Exact unless Ignore durability/charge
+     * loosens it; even then an item that uses its damage to tell sub-items apart (GT plates, circuits) must still have
+     * the same damage, since only its NBT is charge or wear.
+     */
+    private boolean sameIngredient(ItemIdentifier material, ItemIdentifier item) {
+        if (material.equals(item)) {
+            return true;
+        }
+        return loosens(material) && sameItemAnyState(material, item);
+    }
+
+    /**
+     * The machine may make a result in another state than the recipe was set up with (an IC2 crystal with a different
+     * damage or a charge tag), so with Ignore durability/charge the result is taken out whatever its damage and NBT.
+     */
+    @Override
+    protected IResource resultToExtract(LogisticsItemOrder order) {
+        ItemIdentifierStack ordered = order.getResource().getItemStack();
+        if (!loosensResult(ordered.getItem())) {
+            return super.resultToExtract(order);
+        }
+        DictResource dict = new DictResource(ordered, null);
+        dict.ignore_dmg = true;
+        dict.ignore_nbt = true;
+        return dict;
+    }
+
+    @Override
+    protected boolean extractedFillsOrder(LogisticsItemOrder order, ItemIdentifier extracted) {
+        ItemIdentifier ordered = order.getResource().getItem();
+        boolean fills = loosensResult(ordered) && sameItemAnyState(ordered, extracted);
+        if (fills && diagLogged.add(extracted)) {
+            diag("took result " + describe(extracted) + " for an order of " + describe(ordered));
+        }
+        return fills;
+    }
+
+    /**
+     * Whether a result is taken out in any state: some Smart Crafter in this chassis (orders are shared by all of its
+     * modules) makes it and has Ignore durability/charge on.
+     */
+    private boolean loosensResult(ItemIdentifier result) {
+        if (outputIndexFor(result) >= 0) {
+            return loosens(result);
+        }
+        for (ModuleSmartCrafter other : AllCrafters) {
+            if (other != this && other._service == _service && other.outputIndexFor(result) >= 0) {
+                return other.loosens(result);
+            }
+        }
+        return false;
+    }
+
+    /** {@link #sameIngredient}'s loosened rule on its own: same item, damage only where it isn't a sub-item. */
+    private static boolean sameItemAnyState(ItemIdentifier a, ItemIdentifier b) {
+        return b != null && a.item == b.item && (a.itemDamage == b.itemDamage || !a.item.getHasSubtypes());
+    }
+
+    /** With Ignore durability/charge, the planner asks for the item in any state, from storage or from a crafter. */
+    @Override
+    protected IResource ingredientResource(int slot, ItemIdentifierStack resourceStack, IRequestItems target) {
+        if (wearsOrCharges(resourceStack.getItem())) {
+            diag(
+                    "planning slot " + slot + ": recipe wants " + describe(resourceStack.getItem())
+                            + (loosens(resourceStack.getItem()) ? " (any durability/charge)" : " (exact)"));
+            for (ModuleSmartCrafter crafter : AllCrafters) {
+                for (ItemIdentifierStack result : crafter.getConfiguredCraftResults()) {
+                    if (result.getItem().item == resourceStack.getItem().item) {
+                        diag(
+                                "  a Smart Crafter at " + crafter.getX() + "," + crafter.getY() + "," + crafter.getZ()
+                                        + " makes " + describe(result.getItem()));
+                    }
+                }
+            }
+        }
+        if (!loosens(resourceStack.getItem())) {
+            return super.ingredientResource(slot, resourceStack, target);
+        }
+        DictResource dict = new DictResource(resourceStack, target);
+        dict.ignore_dmg = true;
+        dict.ignore_nbt = true;
+        return dict;
     }
 
     /**
@@ -3378,6 +3623,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private boolean isOurResult(ItemIdentifier item, ItemIdentifierStack result) {
         if (item.equals(result.getItem())) {
             return true;
+        }
+        if (loosens(result.getItem()) && sameItemAnyState(result.getItem(), item)) {
+            return true;
+        }
+        if (sameItemAnyState(result.getItem(), item) && wearsOrCharges(item) && diagLogged.add(item)) {
+            diag("machine holds " + describe(item) + " | recipe result is " + describe(result.getItem()));
         }
         if (getUpgradeManager().isFuzzyUpgrade() && outputFuzzyFlags.getBitSet().nextSetBit(0) != -1) {
             DictResource dict = new DictResource(result, null);
@@ -3802,7 +4053,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /** Whether the stack is one of this recipe's item ingredients for {@code sat}'s machine (own when null). */
     private boolean isIngredientFor(ItemStack stack, PipeSmartSatellite sat) {
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
-            if (isGatedSlotAt(slot, sat) && isSameItem(stack, getMaterials(slot).getItem().makeNormalStack(1))) {
+            if (isGatedSlotAt(slot, sat) && sameIngredient(getMaterials(slot).getItem(), ItemIdentifier.get(stack))) {
                 return true;
             }
         }

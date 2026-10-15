@@ -10,6 +10,9 @@ public interface IIC2Proxy {
 
     boolean isSimilarElectricItem(ItemStack stack, ItemStack template);
 
+    /** Whether the stack is an electric item that can store charge, which it keeps in its NBT and damage. */
+    boolean holdsCharge(ItemStack stack);
+
     boolean isFullyCharged(ItemStack stack);
 
     boolean isFullyDischarged(ItemStack stack);
