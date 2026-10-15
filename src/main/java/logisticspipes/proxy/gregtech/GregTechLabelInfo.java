@@ -26,8 +26,8 @@ import logisticspipes.LogisticsPipes;
 
 /**
  * What the Label Upgrade's Auto button can read from a GregTech machine: its name, voltage tier, programmed circuit,
- * extruder shapes and molds, and the "Machine Type" line GTNH puts in multiblock tooltips. A bus or hatch is traced back to the multiblock it belongs
- * to, so a chassis on an input bus is labelled as the multiblock.
+ * extruder shapes and molds, and the "Machine Type" line GTNH puts in multiblock tooltips. A bus or hatch is traced
+ * back to the multiblock it belongs to, so a chassis on an input bus is labelled as the multiblock.
  * <p>
  * Kept in its own class so nothing here is loaded unless GregTech is present; call it through
  * {@link logisticspipes.utils.PipeLabelSuggester} rather than directly.
@@ -158,7 +158,9 @@ public final class GregTechLabelInfo {
         return shapeTags;
     }
 
-    /** {@code Shape_Extruder_Small_Gear} becomes {@code Shape Small Gear}, {@code Shape_Mold_Ingot} {@code Mold Ingot}. */
+    /**
+     * {@code Shape_Extruder_Small_Gear} becomes {@code Shape Small Gear}, {@code Shape_Mold_Ingot} {@code Mold Ingot}.
+     */
     private static String shapeTag(String itemListName) {
         String kind;
         String rest;
@@ -198,8 +200,9 @@ public final class GregTechLabelInfo {
     }
 
     /**
-     * Tags the programmed circuit, {@code circuitN}. A machine or bus with a circuit slot but no circuit in it is tagged
-     * {@code circuit0}, the same as a circuit set to 0; machines without a circuit slot get no circuit tag when empty.
+     * Tags the programmed circuit, {@code circuitN}. A machine or bus with a circuit slot but no circuit in it is
+     * tagged {@code circuit0}, the same as a circuit set to 0; machines without a circuit slot get no circuit tag when
+     * empty.
      */
     private static void addCircuit(IGregTechTileEntity gt, List<String> tags) {
         for (int slot = 0; slot < gt.getSizeInventory(); slot++) {

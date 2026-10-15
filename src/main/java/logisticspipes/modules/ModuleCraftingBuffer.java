@@ -131,9 +131,9 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
     }
 
     /**
-     * Something sent here won't arrive: it was lost on the way, or didn't fit and went elsewhere. Crafters were credited
-     * for it, so whatever credit no stock stands behind any more is taken back and asked for again; otherwise the set
-     * would wait for items that are now in storage, with nothing to fetch them.
+     * Something sent here won't arrive: it was lost on the way, or didn't fit and went elsewhere. Crafters were
+     * credited for it, so whatever credit no stock stands behind any more is taken back and asked for again; otherwise
+     * the set would wait for items that are now in storage, with nothing to fetch them.
      */
     @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {

@@ -284,8 +284,8 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     /**
      * The crafter a delivery to this satellite is for. Several Smart Crafters can send to one satellite (recipes that
-     * share a machine's input bus), so the one named by the delivery's target information is used; only a delivery
-     * that names none falls back to {@link #getOwner()}.
+     * share a machine's input bus), so the one named by the delivery's target information is used; only a delivery that
+     * names none falls back to {@link #getOwner()}.
      */
     public ModuleSmartCrafter crafterFor(IAdditionalTargetInformation info) {
         ModuleSmartCrafter named = ModuleSmartCrafter.crafterOf(info);
@@ -322,10 +322,12 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     /* -- Fluid arrival / not-inserted: a container carries no word of its crafter, so the crafters sort it out -- */
 
+    /**
+     * Not counted here: this is called as the container reaches the pipe, before anything is poured, so it would count
+     * fluid the machine then turns away. {@link #endReached} counts what actually went in.
+     */
     @Override
-    public void liquidArrived(FluidIdentifier fluid, int amount) {
-        ModuleSmartCrafter.fluidArrivedAtSatellite(this, fluid, amount);
-    }
+    public void liquidArrived(FluidIdentifier fluid, int amount) {}
 
     @Override
     public void liquidNotInserted(FluidIdentifier fluid, int amount) {
@@ -389,10 +391,15 @@ public class PipeSmartSatellite extends FluidRoutedPipe
             return false;
         }
         getCacheHolder().trigger(CacheTypes.Inventory);
+        int arrived = liquid.amount;
         // Only the machine this satellite faces may take the fluid. No side/internal overflow tanks.
         if (isConnectableTank(tile, arrivingItem.output, false) && (tile instanceof IFluidHandler handler)) {
             fillSide(liquid, arrivingItem.output, handler);
         }
+        // Counted as delivered only now, and only what went in. Counting the whole container on arrival took the
+        // turned-away part off the crafter's in-flight count too, so when it was the last fluid on its way the refund
+        // below found nothing in flight and was dropped: the crafter thought the fluid was in the machine for good.
+        ModuleSmartCrafter.fluidArrivedAtSatellite(this, FluidIdentifier.get(liquid), arrived - liquid.amount);
         if (liquid.amount == 0) {
             return true;
         }

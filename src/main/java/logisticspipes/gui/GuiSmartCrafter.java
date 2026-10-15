@@ -249,10 +249,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                 crafter.sendSetting(SmartCrafterSetting.CLEANUP, 0, cleanupBox.change() ? 1 : 0);
                 return;
             case ID_IGNORE_DURABILITY:
-                crafter.sendSetting(
-                        SmartCrafterSetting.IGNORE_DURABILITY,
-                        0,
-                        ignoreDurabilityBox.change() ? 1 : 0);
+                crafter.sendSetting(SmartCrafterSetting.IGNORE_DURABILITY, 0, ignoreDurabilityBox.change() ? 1 : 0);
                 return;
             default:
                 super.actionPerformed(guibutton);
@@ -348,7 +345,8 @@ public class GuiSmartCrafter extends ModuleBaseGui {
         }
         String label = StringUtils.translate(GuiSmartCrafter.PREFIX + "IgnoreDurability");
         int right = guiLeft + 24 + mc.fontRenderer.getStringWidth(label);
-        if (mouseX >= guiLeft + 10 && mouseX < right && mouseY >= guiTop + IGNORE_ROW_Y - 1
+        if (mouseX >= guiLeft + 10 && mouseX < right
+                && mouseY >= guiTop + IGNORE_ROW_Y - 1
                 && mouseY < guiTop + IGNORE_ROW_Y + 9) {
             GuiGraphics.drawToolTip(
                     mouseX,

@@ -158,8 +158,8 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
     }
 
     /**
-     * How much of this fluid the tank still takes, counting no further than {@code max}, after the deliveries already on
-     * their way here. The tank itself only knows what it holds now, so two senders asking one after the other would
+     * How much of this fluid the tank still takes, counting no further than {@code max}, after the deliveries already
+     * on their way here. The tank itself only knows what it holds now, so two senders asking one after the other would
      * otherwise both be told the same room, and the second delivery would bounce.
      * <p>
      * A tank that holds a single fluid (most do) can't take a different fluid at all while one is on its way: an empty
@@ -389,9 +389,9 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
     }
 
     /**
-     * Part of a delivery didn't fit. Only credit that no stock stands behind is taken back, since the pool is shared and
-     * the stock may still cover it; it is taken from whichever crafters hold credit for the fluid, as the pool doesn't
-     * say whose delivery it was. Each of them asks for what it lost again.
+     * Part of a delivery didn't fit. Only credit that no stock stands behind is taken back, since the pool is shared
+     * and the stock may still cover it; it is taken from whichever crafters hold credit for the fluid, as the pool
+     * doesn't say whose delivery it was. Each of them asks for what it lost again.
      */
     private static void uncreditBounced(FluidIdentifier fluid, int amount) {
         int unbacked = Math.min(amount, creditFor(fluid) - stockInAllBuffers(fluid));

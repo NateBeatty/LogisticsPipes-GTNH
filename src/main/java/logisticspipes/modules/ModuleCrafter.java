@@ -291,7 +291,8 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 continue;
             }
             // A finished job may still be owed it: crafters hand results to whichever order is first, so the job could
-            // have finished on another job's ingredients, leaving that job a set short. Ask again under a job of its own.
+            // have finished on another job's ingredients, leaving that job a set short. Ask again under a job of its
+            // own.
             CraftingJob job = lost.job != null && lost.job.isDone() ? null : lost.job;
             if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING)) {
                 SinkReply reply = LogisticsManager
@@ -1722,8 +1723,8 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     /**
-     * What to take out of the machine for an order: the ordered item itself. Split out so a subclass can take its result
-     * in whatever state the machine makes it.
+     * What to take out of the machine for an order: the ordered item itself. Split out so a subclass can take its
+     * result in whatever state the machine makes it.
      */
     protected IResource resultToExtract(LogisticsItemOrder order) {
         return order.getResource();

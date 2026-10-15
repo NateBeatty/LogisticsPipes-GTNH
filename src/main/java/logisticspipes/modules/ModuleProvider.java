@@ -401,11 +401,8 @@ public class ModuleProvider extends LogisticsSneakyDirectionModule implements IL
         if (buffer != null) {
             buffer.reserve(item, sent);
             ModuleSmartCrafter.gatedCrafter(gate, info).creditBuffered(info, sent);
-            IRoutedItem sendedItem = _service.sendStack(
-                    removed,
-                    buffer.getBufferRouter(),
-                    itemSendMode(),
-                    buffer.getTargetInformation());
+            IRoutedItem sendedItem = _service
+                    .sendStack(removed, buffer.getBufferRouter(), itemSendMode(), buffer.getTargetInformation());
             _service.getItemOrderManager().sendSuccessfull(sent, false, sendedItem);
             return sent;
         }

@@ -412,8 +412,8 @@ public class RequestTreeNode {
             int itemsNeeded = getMissingAmount();
 
             // A fallback recipe never joins a group already being filled; it gets a turn of its own.
-            if (lastCrafter != null && (craftersSamePriority.isEmpty()
-                    || (currentPriority == lastCrafter.getValue1().getPriority()
+            if (lastCrafter != null
+                    && (craftersSamePriority.isEmpty() || (currentPriority == lastCrafter.getValue1().getPriority()
                             && !fallbacks.contains(lastCrafter.getValue1())))) {
                 currentPriority = lastCrafter.getValue1().getPriority();
                 Pair<ICraftingTemplate, List<IFilter>> crafter = lastCrafter;
