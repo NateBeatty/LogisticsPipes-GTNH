@@ -3868,7 +3868,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * Pulls this recipe's own leftover items out of the machines it uses and sends them into the network, usually to
      * storage: all of its results and ingredients from the machine the chassis faces, its ingredients from each Smart
-     * Satellite input machine, and results no Smart Crafter is waiting for from each output satellite's machine. Other
+     * Satellite input machine, and results no Smart Crafter is waiting for from each output satellite's machine. The
+     * recipe's fluid ingredients and fluid results are drained from the same machines' tanks by the same rules. Other
      * recipes' items are left alone here ({@link #sweepAllRecipesOnMachine} handles those, at claim time). A machine
      * another Smart Crafter holds is skipped, since two recipes can share an ingredient.
      * <p>
@@ -3890,16 +3891,27 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return true; // nothing to retry
         }
         SweepTarget own = sweepTarget(null);
-        if (own == null || MachineClaims.isHeldByOther(own.key, this)) {
+        MachineClaims.Key ownKey = machineKey();
+        if ((own == null && facedTank() == null) || ownKey == null || MachineClaims.isHeldByOther(ownKey, this)) {
             return false;
         }
-        int stacks = sweepResult(own);
-        stacks += sweepIngredients(own, MAX_SWEEP_STACKS - stacks);
+        int stacks = 0;
+        if (own != null) {
+            stacks += sweepResult(own);
+            stacks += sweepIngredients(own, MAX_SWEEP_STACKS - stacks);
+        }
+        sweepOwnFluidResults(false);
+        sweepFluidIngredients(null);
         for (PipeSmartSatellite sat : inputSatellites()) {
+            MachineClaims.Key key = machineKeyOf(sat);
+            if (key == null || MachineClaims.isHeldByOther(key, this)) {
+                continue;
+            }
             SweepTarget target = sweepTarget(sat);
-            if (target != null && !MachineClaims.isHeldByOther(target.key, this)) {
+            if (target != null) {
                 stacks += sweepIngredients(target, MAX_SWEEP_STACKS);
             }
+            sweepFluidIngredients(sat);
         }
         for (PipeSmartSatellite sat : outputSatellites()) {
             SweepTarget target = sweepTarget(sat);
@@ -3907,6 +3919,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
             }
         }
+        sweepSatelliteFluidResults(null);
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
@@ -3964,6 +3977,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
                     stacks += sweepIngredients(own, MAX_SWEEP_STACKS - stacks);
                 }
             }
+            sweepOwnFluidResults(true);
+            if (ingredientsToo) {
+                sweepFluidIngredients(null);
+            }
         }
         List<PipeSmartSatellite> sats = new ArrayList<>(inputSatellites());
         for (PipeSmartSatellite sat : outputSatellites()) {
@@ -3976,14 +3993,17 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             SweepTarget target = sweepTarget(sat);
-            if (target == null) {
-                continue;
+            if (target != null) {
+                stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
+                if (ingredientsToo) {
+                    stacks += sweepIngredients(target, MAX_SWEEP_STACKS);
+                }
             }
-            stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
             if (ingredientsToo) {
-                stacks += sweepIngredients(target, MAX_SWEEP_STACKS);
+                sweepFluidIngredients(sat);
             }
         }
+        sweepSatelliteFluidResults(machine);
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
@@ -4147,6 +4167,125 @@ public class ModuleSmartCrafter extends ModuleCrafter
         item.setDestination(-1);
         item.setTransportMode(TransportMode.Active);
         target.sat.queueRoutedItem(item, target.access);
+    }
+
+    /* Sweeping fluid: the same rules as items, for the recipe's fluid slots */
+
+    /**
+     * This recipe's fluid ingredients in the tank of the machine {@code sat} pours into (null: this module's own), sent
+     * to storage. A fluid some Smart Crafter with work still pours into that machine is left: unlike item slots, a tank
+     * can't tell whose fluid is whose, and that crafter's was delivered for its job, so no provider would send it
+     * again.
+     */
+    private void sweepFluidIngredients(PipeSmartSatellite sat) {
+        IFluidHandler tank = sat == null ? facedTank() : satelliteTank(sat);
+        MachineClaims.Key key = sat == null ? machineKey() : machineKeyOf(sat);
+        if (tank == null || key == null) {
+            return;
+        }
+        ForgeDirection side = sat == null ? insertionSide() : sat.getMachineFacing().getOpposite();
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isGatedFluidSlot(slot) || !goesTo(slot, sat)) {
+                continue;
+            }
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            if (fluid != null && !fluidStillNeededAt(key, fluid)) {
+                sendRemainingFluid(tank, fluid, side, sat);
+            }
+        }
+    }
+
+    /**
+     * This recipe's fluid results in the machine this module faces, sent to storage: all of them, or with
+     * {@code onlyUnordered} only those no order of this module is waiting for. Results addressed to a satellite come
+     * out of that satellite's machine instead ({@link #sweepSatelliteFluidResults}).
+     */
+    private void sweepOwnFluidResults(boolean onlyUnordered) {
+        IFluidHandler tank = facedTank();
+        if (tank == null) {
+            return;
+        }
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            if (!isFluidSlot(slot) || outputSatelliteId[out] != 0) {
+                continue;
+            }
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            if (fluid != null && (!onlyUnordered || outstandingFluid(fluid) <= 0)) {
+                sendRemainingFluid(tank, fluid, insertionSide(), null);
+            }
+        }
+    }
+
+    /**
+     * This recipe's fluid results that come out of a Smart Satellite's machine and that no Smart Crafter using that
+     * machine for the same fluid is waiting for, sent to storage through the satellite. Only in {@code onlyAt} when
+     * set; otherwise in every such machine no other crafter holds.
+     */
+    private void sweepSatelliteFluidResults(MachineClaims.Key onlyAt) {
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            if (!isFluidSlot(slot) || outputSatelliteId[out] == 0) {
+                continue;
+            }
+            PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
+            MachineClaims.Key key = machineKeyOf(sat);
+            IFluidHandler tank = sat == null ? null : satelliteTank(sat);
+            if (key == null || tank == null
+                    || (onlyAt != null ? !onlyAt.equals(key) : MachineClaims.isHeldByOther(key, this))) {
+                continue;
+            }
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            if (fluid != null && !anyCrafterWaitsForFluid(sat, fluid)) {
+                sendRemainingFluid(tank, fluid, sat.getMachineFacing().getOpposite(), sat);
+            }
+        }
+    }
+
+    /** Whether some Smart Crafter whose fluid output comes out of {@code sat}'s machine still has orders for it. */
+    private static boolean anyCrafterWaitsForFluid(PipeSmartSatellite sat, FluidIdentifier fluid) {
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter._service == null) {
+                continue;
+            }
+            for (int out = 0; out < OUTPUT_SLOTS; out++) {
+                int slot = outputInventorySlot(out);
+                if (crafter.isFluidSlot(slot) && crafter.outputSatelliteId[out] == sat.satelliteId
+                        && fluid.equals(crafter.getFluidIngredient(slot))
+                        && crafter.outstandingFluid(fluid) > 0
+                        && crafter.smartSatelliteForId(sat.satelliteId) == sat) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether a Smart Crafter that still has work pours this fluid into the machine at {@code key}. */
+    private static boolean fluidStillNeededAt(MachineClaims.Key key, FluidIdentifier fluid) {
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter._service == null || crafter.getWorld() == null || !crafter.recipeHasWork()) {
+                continue;
+            }
+            for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+                if (crafter.isGatedFluidSlot(slot) && fluid.equals(crafter.getFluidIngredient(slot))
+                        && key.equals(crafter.fluidSlotMachineKey(slot))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The claim key of the machine a fluid slot pours into: this module's own, or its Smart Satellite's. */
+    private MachineClaims.Key fluidSlotMachineKey(int slot) {
+        return advancedSatelliteIdArray[slot] == 0 ? machineKey() : machineKeyOf(endpointOf(slot));
+    }
+
+    /** The tank of the machine a Smart Satellite faces, or null when it faces none that holds fluid. */
+    private static IFluidHandler satelliteTank(PipeSmartSatellite sat) {
+        TileEntity machine = sat.getMachineTile();
+        return sat.getMachineFacing() != null && machine instanceof IFluidHandler ? (IFluidHandler) machine : null;
     }
 
     private ForgeDirection insertionSide() {
