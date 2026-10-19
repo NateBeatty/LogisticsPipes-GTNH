@@ -28,11 +28,15 @@ import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.items.LogisticsFluidContainer;
+import logisticspipes.request.resources.FluidResource;
+import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
 import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.PipeRoutingConnectionType;
 import logisticspipes.routing.ServerRouter;
+import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.item.ItemIdentifier;
 
 /**
@@ -87,17 +91,27 @@ public class CrafterLocator {
         }
     }
 
+    /**
+     * @param item an item, or LP's fluid container standing for a fluid (the request table's fluid view sends one),
+     *             in which case the crafters of that fluid are found
+     */
     public static List<Location> find(CoreRoutedPipe requester, ItemIdentifier item) {
         List<Location> found = new ArrayList<>();
         IRouter from = requester.getRouter();
         if (from == null) {
             return found;
         }
-        ItemResource resource = new ItemResource(
-                item.makeStack(1),
-                requester instanceof IRequestItems ? (IRequestItems) requester : null);
+        IResource resource;
+        FluidIdentifier fluid = item.item instanceof LogisticsFluidContainer ? FluidIdentifier.get(item) : null;
+        if (fluid != null) {
+            resource = new FluidResource(fluid, 1, null);
+        } else {
+            resource = new ItemResource(
+                    item.makeStack(1),
+                    requester instanceof IRequestItems ? (IRequestItems) requester : null);
+        }
         Set<Integer> seen = new HashSet<>();
-        BitSet routersIndex = ServerRouter.getRoutersInterestedIn(item);
+        BitSet routersIndex = ServerRouter.getRoutersInterestedIn(resource);
         for (int i = routersIndex.nextSetBit(0); i >= 0; i = routersIndex.nextSetBit(i + 1)) {
             IRouter r = SimpleServiceLocator.routerManager.getRouterUnsafe(i, false);
             if (r == null || !r.isValidCache()) {
@@ -135,7 +149,7 @@ public class CrafterLocator {
         return false;
     }
 
-    private static Location describe(CoreRoutedPipe pipe, ItemResource resource) {
+    private static Location describe(CoreRoutedPipe pipe, IResource resource) {
         Location l = new Location();
         World world = pipe.getWorld();
         l.dimension = world.provider.dimensionId;

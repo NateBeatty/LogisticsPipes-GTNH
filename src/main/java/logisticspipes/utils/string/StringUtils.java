@@ -1,5 +1,8 @@
 package logisticspipes.utils.string;
 
+import java.math.RoundingMode;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -138,6 +141,34 @@ public final class StringUtils {
             s = "Inf";
         }
         return s;
+    }
+
+    /**
+     * A fluid amount the way NEI labels a fluid tile: exact below 10,000 litres, otherwise cut to four characters with
+     * a k/M/G/... suffix, keeping one decimal only if it fits and rounding down (62208 is "62kL", 1500000 "1.5ML").
+     * Copied from NEI's {@code FluidDisplayRenderer} and {@code ReadableNumberConverter} so LP needs no NEI to run.
+     */
+    public static String getFormattedFluidAmount(long litres) {
+        if (litres < 10_000) {
+            return litres + "L";
+        }
+        int digits = Long.toString(litres).length();
+        long base = litres;
+        long last = base;
+        int exponent = -1;
+        while (digits > 4) {
+            last = base;
+            base /= 1000;
+            exponent++;
+            digits = Long.toString(base).length() + 1; // + 1 for the suffix
+        }
+        char suffix = "kMGTPE".charAt(exponent);
+        DecimalFormatSymbols symbols = new DecimalFormatSymbols();
+        symbols.setDecimalSeparator('.');
+        DecimalFormat oneDecimal = new DecimalFormat(".#", symbols);
+        oneDecimal.setRoundingMode(RoundingMode.DOWN);
+        String withDecimal = oneDecimal.format(last / 1000D) + suffix;
+        return (withDecimal.length() <= 4 ? withDecimal : base + String.valueOf(suffix)) + "L";
     }
 
     public static String toPercent(double value) {

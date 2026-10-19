@@ -36,6 +36,7 @@ public class FluidGuiOrderer extends GuiOrderer {
                     ySize - 100,
                     new int[] { 1, 1000, 16000, 100 },
                     false);
+            itemDisplay.setFluids(true);
         }
         itemDisplay.reposition(guiLeft + 10, guiTop + 18, xSize - 20, ySize - 100);
     }

@@ -198,8 +198,10 @@ public class ItemStackRenderer {
         // 20 should be about the size of a block
         GuiGraphics.drawDurabilityBar(itemStack, posX, posY, zLevel + 20.0F);
 
-        // if we want to render the amount, do that
-        if (displayAmount != DisplayAmount.NEVER) {
+        if (displayAmount == DisplayAmount.LITRES) {
+            renderLitres();
+        } else if (displayAmount != DisplayAmount.NEVER) {
+            // if we want to render the amount, do that
             if (ignoreDepth) {
                 GL11.glDisable(GL11.GL_DEPTH_TEST);
             } else {
@@ -233,9 +235,34 @@ public class ItemStackRenderer {
         GL11.glPopAttrib();
     }
 
+    /**
+     * The stack size as litres, drawn the way NEI labels a fluid tile: half scale (three quarters with the unicode
+     * font), white with a shadow, in the bottom left corner. The depth test is off so the text lands on the fluid icon
+     * rather than behind it.
+     */
+    private void renderLitres() {
+        String amountString = StringUtils.getFormattedFluidAmount(itemIdentifierStack.getStackSize());
+        float scale = fontRenderer.getUnicodeFlag() ? 3F / 4F : 1F / 2F;
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        GL11.glDisable(GL11.GL_BLEND);
+        GL11.glPushMatrix();
+        GL11.glTranslatef(posX, posY, zLevel + 40.0F);
+        GL11.glScalef(scale, scale, 1.0F);
+        fontRenderer.drawString(
+                amountString,
+                0,
+                (int) (16 / scale) - fontRenderer.FONT_HEIGHT + 1,
+                Color.getValue(Color.WHITE),
+                true);
+        GL11.glPopMatrix();
+    }
+
     public enum DisplayAmount {
         HIDE_ONE,
         ALWAYS,
         NEVER,
+        /** The stack stands for a fluid and its size is in litres. */
+        LITRES,
     }
 }

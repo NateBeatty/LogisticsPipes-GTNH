@@ -55,6 +55,24 @@ public class LogisticsFluidContainer extends LogisticsItem implements IItemAdvan
         return super.getUnlocalizedName(par1ItemStack);
     }
 
+    /**
+     * The fluid's own name, as NEI and GT show it. Translating {@link #getUnlocalizedName(ItemStack)} only works for
+     * fluids with a language file entry; newer GT materials hand their name over in
+     * {@code Fluid.getLocalizedName} instead, and showed up as their raw key ("fluid.3,3diaminobenzidine").
+     */
+    @Override
+    public String getItemStackDisplayName(ItemStack itemstack) {
+        FluidStack stack = SimpleServiceLocator.logisticsFluidManager
+                .getFluidFromContainer(ItemIdentifierStack.getFromStack(itemstack));
+        if (stack != null && stack.getFluid() != null) {
+            String name = stack.getFluid().getLocalizedName(stack);
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
+        }
+        return super.getItemStackDisplayName(itemstack);
+    }
+
     @Override
     @SideOnly(Side.CLIENT)
     public void addInformation(ItemStack par1ItemStack, EntityPlayer par2EntityPlayer, List<String> par3List,

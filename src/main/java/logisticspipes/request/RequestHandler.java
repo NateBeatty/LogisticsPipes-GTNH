@@ -4,10 +4,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.TreeSet;
 
 import net.minecraft.entity.player.EntityPlayer;
@@ -27,6 +29,7 @@ import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.request.RequestTree.ActiveRequestType;
 import logisticspipes.request.resources.IResource;
+import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.order.LinkedLogisticsOrderList;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -267,6 +270,28 @@ public class RequestHandler {
         TreeSet<ItemIdentifierStack> _allItems = SimpleServiceLocator.logisticsFluidManager
                 .getAvailableFluid(pipe.getRouter().getIRoutersByCost());
         MainProxy.sendPacketToPlayer(PacketHandler.getPacket(OrdererContent.class).setIdentSet(_allItems), player);
+    }
+
+    /**
+     * The request table's fluid view: {@link #refresh} for fluids. Amounts are in litres; a fluid that can only be
+     * crafted shows 0, as a craftable item does.
+     */
+    public static void refreshFluids(EntityPlayer player, CoreRoutedPipe pipe, DisplayOptions option) {
+        List<ExitRoute> routes = pipe.getRouter().getIRoutersByCost();
+        Map<FluidIdentifier, Integer> available = option == DisplayOptions.CraftOnly ? new HashMap<>()
+                : SimpleServiceLocator.logisticsFluidManager.getProvidableFluids(routes);
+        Set<FluidIdentifier> craftable = option == DisplayOptions.SupplyOnly ? new HashSet<>()
+                : SimpleServiceLocator.logisticsFluidManager.getCraftableFluids(routes);
+        TreeSet<ItemIdentifierStack> all = new TreeSet<>();
+        for (Entry<FluidIdentifier, Integer> fluid : available.entrySet()) {
+            all.add(fluid.getKey().getItemIdentifier().makeStack(fluid.getValue()));
+        }
+        for (FluidIdentifier fluid : craftable) {
+            if (!available.containsKey(fluid)) {
+                all.add(fluid.getItemIdentifier().makeStack(0));
+            }
+        }
+        MainProxy.sendPacketToPlayer(PacketHandler.getPacket(OrdererContent.class).setIdentSet(all), player);
     }
 
     public static void requestFluid(final EntityPlayer player, final ItemIdentifierStack stack, CoreRoutedPipe pipe,

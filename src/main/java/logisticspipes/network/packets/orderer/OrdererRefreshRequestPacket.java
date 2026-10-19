@@ -22,14 +22,19 @@ public class OrdererRefreshRequestPacket extends IntegerCoordinatesPacket {
 
     @Override
     public void processPacket(EntityPlayer player) {
-        int dimension = (getInteger() - (getInteger() % 10)) / 10;
+        // The client sends dimension * 10 + mode. Floor division keeps that apart for a negative dimension too (the
+        // Nether's -1 is sent as -10 + mode), which plain / and % did not.
+        int dimension = Math.floorDiv(getInteger(), 10);
         final LogisticsTileGenericPipe pipe = MainProxy.proxy
                 .getPipeInDimensionAt(dimension, getPosX(), getPosY(), getPosZ(), player);
         if (pipe == null || !(pipe.pipe instanceof CoreRoutedPipe)) {
             return;
         }
+        // The last digit is the display option, plus 3 for the request table's fluid view.
+        int mode = Math.floorMod(getInteger(), 10);
+        boolean fluids = mode >= 3 && mode <= 5;
         RequestHandler.DisplayOptions option;
-        switch (getInteger() % 10) {
+        switch (fluids ? mode - 3 : mode) {
             case 1:
                 option = RequestHandler.DisplayOptions.SupplyOnly;
                 break;
@@ -41,6 +46,10 @@ public class OrdererRefreshRequestPacket extends IntegerCoordinatesPacket {
                 option = RequestHandler.DisplayOptions.Both;
                 break;
         }
-        RequestHandler.refresh(player, (CoreRoutedPipe) pipe.pipe, option);
+        if (fluids) {
+            RequestHandler.refreshFluids(player, (CoreRoutedPipe) pipe.pipe, option);
+        } else {
+            RequestHandler.refresh(player, (CoreRoutedPipe) pipe.pipe, option);
+        }
     }
 }

@@ -81,6 +81,10 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
     public final PipeBlockRequestTable _table;
     private SmallGuiButton Macrobutton;
     private SmallGuiButton locateButton;
+    private GuiButton requestButton;
+    private SmallGuiButton contentButton;
+    /** The list shows the network's fluids instead of its items: for looking and Locate only, nothing is requested. */
+    private boolean showFluids = false;
 
     public final EntityPlayer _entityPlayer;
     public ItemDisplay itemDisplay;
@@ -151,7 +155,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
 
         buttonList.clear();
         // @formatter:off
-        buttonList.add(hideWhileSmall.addChain(new GuiButton(0, right - 55, bottom - 25, 50, 20, "Request"))); // Request
+        buttonList.add(hideWhileSmall.addChain(requestButton = new GuiButton(0, right - 55, bottom - 25, 50, 20, "Request"))); // Request
         buttonList.add(hideWhileSmall.addChain(locateButton = new SmallGuiButton(19, right - 55, bottom - 38, 50, 10, "Locate"))); // Locate
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(1, right - 15, guiTop + 5, 10, 10, ">"))); // Next
         // page
@@ -168,8 +172,9 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
         buttonList.add(hideWhileSmall.addChain(popupCheckBox)); // Popup
 
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(3, guiLeft + 210, bottom - 15, 46, 10, "Refresh"))); // Refresh
-        buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(13, guiLeft + 210, bottom - 28, 46, 10, "Content"))); // Component
+        buttonList.add(hideWhileSmall.addChain(contentButton = new SmallGuiButton(13, guiLeft + 210, bottom - 28, 46, 10, "Content"))); // Component
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(9, guiLeft + 210, bottom - 41, 46, 10, "Both")));
+        buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(23, guiLeft + 258, bottom - 41, 34, 10, showFluids ? "Fluids" : "Items"))); // Items / Fluids
         buttonList.add(hideWhileSmall.addChain(new SmallGuiButton(20, right - 116, bottom - 41, 26, 10, "Sort"))); // Sort
 
         buttonList.add(moveWhileSmall.addChain(new SmallGuiButton(14, guiLeft + 96, guiTop + 53, 10, 10, "+"))); // +1
@@ -535,6 +540,9 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
             default:
                 integer = 3;
         }
+        if (showFluids) {
+            integer += 3; // 3 to 5: the same options for fluids
+        }
         integer += (dimension * 10);
         MainProxy.sendPacketToServer(
                 PacketHandler.getPacket(OrdererRefreshRequestPacket.class).setInteger(integer)
@@ -543,7 +551,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
 
     @Override
     protected void actionPerformed(GuiButton guibutton) {
-        if (guibutton.id == 0 && itemDisplay.getSelectedItem() != null) {
+        if (guibutton.id == 0 && itemDisplay.getSelectedItem() != null && !showFluids) {
             MainProxy.sendPacketToServer(
                     PacketHandler.getPacket(RequestSubmitPacket.class).setDimension(dimension)
                             .setStack(itemDisplay.getSelectedItem().getItem().makeStack(itemDisplay.getRequestCount()))
@@ -571,7 +579,7 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
             GuiCheckBox button = (GuiCheckBox) guibutton;
             Configs.DISPLAY_POPUP = button.change();
             Configs.savePopupState();
-        } else if (guibutton.id == 13 && itemDisplay.getSelectedItem() != null) {
+        } else if (guibutton.id == 13 && itemDisplay.getSelectedItem() != null && !showFluids) {
             MainProxy.sendPacketToServer(
                     PacketHandler.getPacket(RequestComponentPacket.class).setDimension(dimension)
                             .setStack(itemDisplay.getSelectedItem().getItem().makeStack(itemDisplay.getRequestCount()))
@@ -598,6 +606,13 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
                     break;
             }
             guibutton.displayString = displayString;
+            refreshItems();
+        } else if (guibutton.id == 23) {
+            showFluids = !showFluids;
+            guibutton.displayString = showFluids ? "Fluids" : "Items";
+            itemDisplay.setFluids(showFluids);
+            // Emptied until the server answers, so the old list is never drawn with the other kind's labels.
+            itemDisplay.setItemList(new ArrayList<>());
             refreshItems();
         } else if (guibutton.id == 14) {
             requestMatrix(1);
@@ -708,6 +723,8 @@ public class GuiRequestTable extends LogisticsBaseGuiScreen
         }
         GuiGraphics.displayItemToolTip(itemDisplay.getToolTip(), this, zLevel, guiLeft, guiTop);
         locateButton.enabled = itemDisplay.getSelectedItem() != null;
+        requestButton.enabled = !showFluids;
+        contentButton.enabled = !showFluids;
         Macrobutton.enabled = _table.diskInv.getStackInSlot(0) != null
                 && _table.diskInv.getStackInSlot(0).getItem().equals(LogisticsPipes.LogisticsItemDisk);
     }

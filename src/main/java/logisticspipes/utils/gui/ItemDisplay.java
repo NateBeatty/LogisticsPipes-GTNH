@@ -32,6 +32,7 @@ import logisticspipes.utils.item.ItemStackRenderer.DisplayAmount;
 import logisticspipes.utils.string.StringUtils;
 import logisticspipes.utils.tuples.Pair;
 import lombok.Getter;
+import lombok.Setter;
 
 public class ItemDisplay {
 
@@ -70,6 +71,9 @@ public class ItemDisplay {
     private final boolean shiftPageChange;
     private final Minecraft mc = FMLClientHandler.instance().getClient();
     private static DisplayOption option = DisplayOption.ID;
+    /** The list holds fluids, as LP fluid containers sized in litres, so amounts are labelled as litres. */
+    @Setter
+    private boolean fluids = false;
 
     public ItemDisplay(IItemSearch search, FontRenderer fontRenderer, LogisticsBaseGuiScreen screen,
             ISpecialItemRenderer renderer, int left, int top, int width, int height, int[] amountChangeMode,
@@ -363,7 +367,8 @@ public class ItemDisplay {
 
                 // use GuiGraphics to render the ItemStacks
                 ItemStackRenderer itemstackRenderer = new ItemStackRenderer(x, y, 100.0F, true, false, true);
-                itemstackRenderer.setItemIdentifierStack(itemIdentifierStack).setDisplayAmount(DisplayAmount.HIDE_ONE);
+                itemstackRenderer.setItemIdentifierStack(itemIdentifierStack)
+                        .setDisplayAmount(fluids ? DisplayAmount.LITRES : DisplayAmount.HIDE_ONE);
                 itemstackRenderer.renderInGui();
 
                 x += panelxSize;

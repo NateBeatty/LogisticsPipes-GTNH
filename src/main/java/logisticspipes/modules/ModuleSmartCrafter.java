@@ -1972,6 +1972,25 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
+    /**
+     * The fluids this module offers to the planner, for the request table's fluid list: the fluid twin of
+     * {@link #getConfiguredCraftResults()}, which leaves fluids out.
+     */
+    public List<FluidIdentifier> getCraftedFluids() {
+        List<FluidIdentifier> list = new ArrayList<>(OUTPUT_SLOTS);
+        for (int out = 0; out < OUTPUT_SLOTS; out++) {
+            int slot = outputInventorySlot(out);
+            if (outputRole[out] != OutputRole.PRODUCT || !isFluidSlot(slot)) {
+                continue;
+            }
+            FluidIdentifier fluid = getFluidIngredient(slot);
+            if (fluid != null) {
+                list.add(fluid);
+            }
+        }
+        return list;
+    }
+
     /** The result slot producing this fluid as a Product, or -1. Only a Product is offered to the planner. */
     private int fluidResultSlot(FluidIdentifier fluid) {
         if (fluid == null) {

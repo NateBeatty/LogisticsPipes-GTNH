@@ -1,9 +1,11 @@
 package logisticspipes.logistics;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.TreeSet;
 
 import net.minecraft.item.ItemStack;
@@ -11,10 +13,15 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.fluids.FluidStack;
 
 import logisticspipes.LogisticsPipes;
+import logisticspipes.interfaces.routing.IFilter;
 import logisticspipes.interfaces.routing.IFluidSink;
 import logisticspipes.interfaces.routing.IProvideFluids;
 import logisticspipes.items.LogisticsFluidContainer;
+import logisticspipes.modules.ModuleSmartCrafter;
+import logisticspipes.modules.abstractmodules.LogisticsModule;
+import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
+import logisticspipes.request.resources.FluidResource;
 import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.PipeRoutingConnectionType;
@@ -132,5 +139,84 @@ public class LogisticsFluidManager implements ILogisticsFluidManager {
             itemIdentifierStackList.add(new ItemIdentifierStack(item.getKey().getItemIdentifier(), item.getValue()));
         }
         return itemIdentifierStackList;
+    }
+
+    /**
+     * Per provider pipe rather than per route: a pipe reached by more than one route counts once, with each fluid that
+     * any of its routes lets through.
+     */
+    @Override
+    public Map<FluidIdentifier, Integer> getProvidableFluids(List<ExitRoute> validDestinations) {
+        Map<Integer, Map<FluidIdentifier, Integer>> byProvider = new HashMap<>();
+        for (ExitRoute r : validDestinations) {
+            if (r == null || !r.containsFlag(PipeRoutingConnectionType.canRequestFrom)) {
+                continue;
+            }
+            if (!(r.destination.getPipe() instanceof IProvideFluids) || blocks(r.filters, null, true)) {
+                continue;
+            }
+            Map<FluidIdentifier, Integer> provided = ((IProvideFluids) r.destination.getPipe()).getAvailableFluids();
+            Map<FluidIdentifier, Integer> counted = byProvider
+                    .computeIfAbsent(r.destination.getSimpleID(), id -> new HashMap<>());
+            for (Entry<FluidIdentifier, Integer> fluid : provided.entrySet()) {
+                if (!blocks(r.filters, fluid.getKey(), true)) {
+                    counted.put(fluid.getKey(), fluid.getValue());
+                }
+            }
+        }
+        Map<FluidIdentifier, Integer> all = new HashMap<>();
+        for (Map<FluidIdentifier, Integer> counted : byProvider.values()) {
+            for (Entry<FluidIdentifier, Integer> fluid : counted.entrySet()) {
+                all.merge(fluid.getKey(), fluid.getValue(), (a, b) -> (int) Math.min(Integer.MAX_VALUE, (long) a + b));
+            }
+        }
+        return all;
+    }
+
+    /**
+     * Fluid Products of the Smart Crafters in each chassis a request can reach, with the same filter test
+     * {@code RequestTreeNode.checkCrafting} applies before it uses a crafter.
+     */
+    @Override
+    public Set<FluidIdentifier> getCraftableFluids(List<ExitRoute> validDestinations) {
+        Set<FluidIdentifier> craftable = new HashSet<>();
+        for (ExitRoute r : validDestinations) {
+            if (r == null || !r.containsFlag(PipeRoutingConnectionType.canRequestFrom)) {
+                continue;
+            }
+            if (!(r.destination.getPipe() instanceof PipeLogisticsChassi) || blocks(r.filters, null, false)) {
+                continue;
+            }
+            PipeLogisticsChassi chassis = (PipeLogisticsChassi) r.destination.getPipe();
+            for (int slot = 0; slot < chassis.getChassiSize(); slot++) {
+                LogisticsModule module = chassis.getModules().getSubModule(slot);
+                if (!(module instanceof ModuleSmartCrafter)) {
+                    continue;
+                }
+                for (FluidIdentifier fluid : ((ModuleSmartCrafter) module).getCraftedFluids()) {
+                    if (!blocks(r.filters, fluid, false)) {
+                        craftable.add(fluid);
+                    }
+                }
+            }
+        }
+        return craftable;
+    }
+
+    /**
+     * Whether a route's filters stop a request: for a provider ({@code providing}) or a crafter, and with a fluid, for
+     * that fluid too. Same test as {@code PipeFluidProvider.canProvide} and {@code RequestTreeNode.checkCrafting}.
+     */
+    private static boolean blocks(List<IFilter> filters, FluidIdentifier fluid, boolean providing) {
+        FluidResource resource = fluid == null ? null : new FluidResource(fluid, 1, null);
+        for (IFilter filter : filters) {
+            if (providing ? filter.blockProvider() : filter.blockCrafting()) {
+                return true;
+            }
+            if (resource != null && filter.isBlocked() == filter.isFilteredItem(resource)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
