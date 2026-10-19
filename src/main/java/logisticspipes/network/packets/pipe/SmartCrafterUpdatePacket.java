@@ -44,6 +44,10 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
     @Setter
     private boolean ignoreDurability;
 
+    @Getter
+    @Setter
+    private boolean sharedOutputSatellites;
+
     /** One of {@code ModuleSmartCrafter.STATUS_*}; a snapshot from when this was sent. */
     @Getter
     @Setter
@@ -81,6 +85,7 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         data.writeIntegerArray(fluidAmount);
         data.writeBoolean(cleanupEnabled);
         data.writeBoolean(ignoreDurability);
+        data.writeBoolean(sharedOutputSatellites);
         data.writeInt(status);
         data.writeBoolean(statusItem != null);
         if (statusItem != null) {
@@ -98,6 +103,7 @@ public class SmartCrafterUpdatePacket extends CraftingPipeUpdatePacket {
         fluidAmount = data.readIntegerArray();
         cleanupEnabled = data.readBoolean();
         ignoreDurability = data.readBoolean();
+        sharedOutputSatellites = data.readBoolean();
         status = data.readInt();
         statusItem = data.readBoolean() ? data.readItemIdentifierStack() : null;
         setsReleased = data.readInt();

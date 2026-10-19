@@ -182,6 +182,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * Off by default: until it is ticked, ingredients match exactly, as they always have.
      */
     private boolean ignoreDurability = false;
+    /**
+     * Any result addressed to a Smart Satellite may come out of any of this recipe's output satellites, not only its
+     * own. For machines that pick the output themselves, such as a Large Chemical Reactor whose output hatches aren't
+     * locked to a fluid: each fluid lands in whichever hatch has room. Results addressed to no satellite still come out
+     * of the faced machine. Off by default: until it is ticked, each result comes out of its own satellite only.
+     */
+    private boolean sharedOutputSatellites = false;
 
     /** True when not even one recipe set fits in an empty machine, so the gate can never open. */
     @Getter
@@ -1165,12 +1172,22 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * The Smart Satellite a fluid output is addressed to, or null when the output goes to the block this module faces.
+     * The Smart Satellite a fluid output is drained through, or null when the output goes to the block this module
+     * faces. With {@link #sharedOutputSatellites} that is the first of the recipe's output satellites whose machine
+     * holds the fluid; its own satellite when none does.
      */
     private PipeSmartSatellite satelliteForOutput(FluidIdentifier fluid) {
         int out = outputSlotForFluid(fluid);
         if (out < 0 || outputSatelliteId[out] == 0) {
             return null;
+        }
+        if (sharedOutputSatellites) {
+            for (PipeSmartSatellite sat : satellitesForOutput(out)) {
+                IFluidHandler tank = satelliteTank(sat);
+                if (tank != null && heldInTank(tank, fluid, sat.getMachineFacing().getOpposite()) > 0) {
+                    return sat;
+                }
+            }
         }
         return smartSatelliteForId(outputSatelliteId[out]);
     }
@@ -1640,6 +1657,41 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
+     * The reachable Smart Satellites output {@code out} may come out of: its own, or with
+     * {@link #sharedOutputSatellites} any of this recipe's output satellites. Empty when it comes out of the faced
+     * machine, or its satellite can't be reached.
+     */
+    private List<PipeSmartSatellite> satellitesForOutput(int out) {
+        if (out < 0 || outputSatelliteId[out] == 0) {
+            return Collections.emptyList();
+        }
+        if (sharedOutputSatellites) {
+            return outputSatellites();
+        }
+        PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
+        return sat == null ? Collections.<PipeSmartSatellite>emptyList() : Collections.singletonList(sat);
+    }
+
+    /** Whether output {@code out} may come out of the satellite with this id (see {@link #satellitesForOutput}). */
+    private boolean comesOutOf(int out, int satelliteId) {
+        if (satelliteId == 0 || outputSatelliteId[out] == 0) {
+            return false;
+        }
+        if (outputSatelliteId[out] == satelliteId) {
+            return true;
+        }
+        if (!sharedOutputSatellites) {
+            return false;
+        }
+        for (int other = 0; other < OUTPUT_SLOTS; other++) {
+            if (getOutput(other) != null && outputSatelliteId[other] == satelliteId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Which machine the extraction loop pulls a finished result from. For an output addressed to a satellite, the
      * result comes out of the machine that satellite faces and enters the network through the satellite; otherwise it
      * comes from the machines the chassis faces, as always. The order and set accounting (see
@@ -1658,15 +1710,21 @@ public class ModuleSmartCrafter extends ModuleCrafter
         List<PipeSmartSatellite> seen = new ArrayList<>();
         boolean fromFaced = false;
         for (ModuleSmartCrafter maker : chassisMakersOf(item)) {
-            int out = maker.outputIndexFor(item);
-            PipeSmartSatellite sat = maker.outputSatelliteId[out] == 0 ? null
-                    : maker.smartSatelliteForId(maker.outputSatelliteId[out]);
-            AdjacentTile source = satelliteResultSource(sat);
-            if (source == null) {
+            boolean viaSatellite = false;
+            // One satellite, or with shared outputs every output satellite of the maker's recipe.
+            for (PipeSmartSatellite sat : maker.satellitesForOutput(maker.outputIndexFor(item))) {
+                AdjacentTile source = satelliteResultSource(sat);
+                if (source == null) {
+                    continue;
+                }
+                viaSatellite = true;
+                if (!seen.contains(sat)) {
+                    seen.add(sat);
+                    sources.add(source);
+                }
+            }
+            if (!viaSatellite) {
                 fromFaced = true;
-            } else if (!seen.contains(sat)) {
-                seen.add(sat);
-                sources.add(source);
             }
         }
         if (sources.isEmpty()) {
@@ -2066,7 +2124,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
                 .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled)
-                .setIgnoreDurability(ignoreDurability).setStatus(status).setStatusItem(statusItem)
+                .setIgnoreDurability(ignoreDurability).setSharedOutputSatellites(sharedOutputSatellites)
+                .setStatus(status).setStatusItem(statusItem)
                 .setSetsReleased(setsReleased);
         packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
                 .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
@@ -2096,6 +2155,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         cleanupEnabled = packet.isCleanupEnabled();
         ignoreDurability = packet.isIgnoreDurability();
+        sharedOutputSatellites = packet.isSharedOutputSatellites();
         lastStatus = packet.getStatus();
         lastStatusItem = packet.getStatusItem();
         setsReleased = packet.getSetsReleased();
@@ -2152,6 +2212,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 ignoreDurability = value != 0;
                 gateDirty = true;
                 return;
+            case SmartCrafterSetting.SHARED_OUTPUT_SATELLITES:
+                sharedOutputSatellites = value != 0;
+                return;
             default:
         }
     }
@@ -2162,6 +2225,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     public boolean isIgnoreDurability() {
         return ignoreDurability;
+    }
+
+    public boolean isSharedOutputSatellites() {
+        return sharedOutputSatellites;
     }
 
     @Override
@@ -2349,6 +2416,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         super.readFromNBT(nbttagcompound);
         cleanupEnabled = !nbttagcompound.hasKey("SmartCleanup") || nbttagcompound.getBoolean("SmartCleanup");
         ignoreDurability = nbttagcompound.getBoolean("SmartIgnoreDurability");
+        sharedOutputSatellites = nbttagcompound.getBoolean("SmartSharedOutputSatellites");
         int[] roles = nbttagcompound.getIntArray("SmartOutputRole");
         int[] chances = nbttagcompound.getIntArray("SmartOutputChance");
         int[] satellites = nbttagcompound.getIntArray("SmartOutputSatellite");
@@ -2401,6 +2469,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         nbttagcompound.setIntArray("SmartFluidAmount", fluidAmount);
         nbttagcompound.setBoolean("SmartCleanup", cleanupEnabled);
         nbttagcompound.setBoolean("SmartIgnoreDurability", ignoreDurability);
+        nbttagcompound.setBoolean("SmartSharedOutputSatellites", sharedOutputSatellites);
         if (!nonConsumed.isEmpty() && nonConsumedFor != null) {
             NBTTagList list = new NBTTagList();
             for (ItemIdentifier item : nonConsumed) {
@@ -2667,7 +2736,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * <p>
      * Role has no bearing on this. What matters is only whether an order is waiting for the item, in which case it is
      * left for that order. Results that come out of an output satellite's machine are drained the same way, unless a
-     * Smart Crafter sharing that machine is waiting for the item.
+     * Smart Crafter sharing that machine is waiting for the item. Fluid results too, by the same rules.
      */
     private void drainUnorderedOutputs() {
         // Only while this module has a job of its own. With nothing ordered there is no craft of ours to keep running,
@@ -2697,6 +2766,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 stacks += sweepUnwantedResults(target, MAX_SWEEP_STACKS);
             }
         }
+        // Fluid results by the same rule. Without this a fluid byproduct was only drained by the sweep once the job was
+        // done, so a job longer than the output hatch holds (16 sets of 1000L into a 16000L hatch) filled it and the
+        // machine stopped mid-job.
+        MachineClaims.Key ownKey = machineKey();
+        if (ownKey != null && !MachineClaims.isHeldByOther(ownKey, this)) {
+            sweepOwnFluidResults(true);
+        }
+        sweepSatelliteFluidResults(null);
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
@@ -4050,7 +4127,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int out = 0; out < OUTPUT_SLOTS && stacks < maxStacks; out++) {
             ItemIdentifierStack output = getOutput(out);
             if (output == null || target.sat == null
-                    || outputSatelliteId[out] != target.sat.satelliteId
+                    || !comesOutOf(out, target.sat.satelliteId)
                     || anyCrafterWaitsFor(target.sat, output.getItem())) {
                 continue;
             }
@@ -4067,7 +4144,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             for (int out = 0; out < OUTPUT_SLOTS; out++) {
                 ItemIdentifierStack output = crafter.getOutput(out);
-                if (output != null && crafter.outputSatelliteId[out] == sat.satelliteId
+                if (output != null && crafter.comesOutOf(out, sat.satelliteId)
                         && crafter.isOurResult(item, output)
                         && crafter.outstandingResults(output) > 0
                         && crafter.smartSatelliteForId(sat.satelliteId) == sat) {
@@ -4244,19 +4321,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private void sweepSatelliteFluidResults(MachineClaims.Key onlyAt) {
         for (int out = 0; out < OUTPUT_SLOTS; out++) {
             int slot = outputInventorySlot(out);
-            if (!isFluidSlot(slot) || outputSatelliteId[out] == 0) {
+            FluidIdentifier fluid = isFluidSlot(slot) ? getFluidIngredient(slot) : null;
+            if (fluid == null) {
                 continue;
             }
-            PipeSmartSatellite sat = smartSatelliteForId(outputSatelliteId[out]);
-            MachineClaims.Key key = machineKeyOf(sat);
-            IFluidHandler tank = sat == null ? null : satelliteTank(sat);
-            if (key == null || tank == null
-                    || (onlyAt != null ? !onlyAt.equals(key) : MachineClaims.isHeldByOther(key, this))) {
-                continue;
-            }
-            FluidIdentifier fluid = getFluidIngredient(slot);
-            if (fluid != null && !anyCrafterWaitsForFluid(sat, fluid)) {
-                sendRemainingFluid(tank, fluid, sat.getMachineFacing().getOpposite(), sat);
+            for (PipeSmartSatellite sat : satellitesForOutput(out)) {
+                MachineClaims.Key key = machineKeyOf(sat);
+                IFluidHandler tank = satelliteTank(sat);
+                if (key == null || tank == null
+                        || (onlyAt != null ? !onlyAt.equals(key) : MachineClaims.isHeldByOther(key, this))) {
+                    continue;
+                }
+                if (!anyCrafterWaitsForFluid(sat, fluid)) {
+                    sendRemainingFluid(tank, fluid, sat.getMachineFacing().getOpposite(), sat);
+                }
             }
         }
     }
@@ -4269,7 +4347,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             for (int out = 0; out < OUTPUT_SLOTS; out++) {
                 int slot = outputInventorySlot(out);
-                if (crafter.isFluidSlot(slot) && crafter.outputSatelliteId[out] == sat.satelliteId
+                if (crafter.isFluidSlot(slot) && crafter.comesOutOf(out, sat.satelliteId)
                         && fluid.equals(crafter.getFluidIngredient(slot))
                         && crafter.outstandingFluid(fluid) > 0
                         && crafter.smartSatelliteForId(sat.satelliteId) == sat) {

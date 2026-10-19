@@ -35,6 +35,8 @@ public class SmartCrafterSetting extends ModuleCoordinatesPacket {
     public static final int FLUID_AMOUNT = 7;
     /** Module-wide: ingredients that wear down or hold charge match whatever their damage and NBT. */
     public static final int IGNORE_DURABILITY = 8;
+    /** Module-wide: a result addressed to a Smart Satellite may come out of any of the recipe's output satellites. */
+    public static final int SHARED_OUTPUT_SATELLITES = 9;
 
     @Getter
     @Setter

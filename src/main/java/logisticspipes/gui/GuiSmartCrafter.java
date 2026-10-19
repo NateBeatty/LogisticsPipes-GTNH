@@ -54,15 +54,17 @@ public class GuiSmartCrafter extends ModuleBaseGui {
     private static final int ROLE_X = 178;
     private static final int ROLE_W = 62;
 
-    private static final int ACTION_ROW_Y = 124;
-    private static final int SETTING_ROW_Y = 138;
-    /** Under Cleanup, the other machine-side setting. */
-    private static final int IGNORE_ROW_Y = 152;
+    /** The rows below are 12px apart, a checkbox's height and a gap, so three checkboxes fit above the status line. */
+    private static final int ACTION_ROW_Y = 122;
+    private static final int SETTING_ROW_Y = 134;
+    /** Under Cleanup, the other machine-side settings. */
+    private static final int IGNORE_ROW_Y = 146;
+    private static final int SHARED_OUTPUTS_ROW_Y = 158;
     /**
      * Where the "Inventory" title used to be: the gui can't grow any taller and still fit a 1080p screen at auto gui
      * scale, and the player's slots say what they are without it.
      */
-    private static final int STATUS_Y = 166;
+    private static final int STATUS_Y = 168;
 
     private static final int OPEN_X = 10;
     private static final int OPEN_W = 30;
@@ -83,6 +85,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
     private static final int ID_PRIORITY_UP = 4;
     private static final int ID_CLEANUP = 5;
     private static final int ID_IGNORE_DURABILITY = 6;
+    private static final int ID_SHARED_OUTPUTS = 7;
     private static final int ID_ROLE = 10;
 
     /** How often the open gui asks the server for a fresh status. */
@@ -96,6 +99,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
     private final GuiButton[] roleButtons = new GuiButton[ModuleSmartCrafter.OUTPUT_SLOTS];
     private GuiCheckBox cleanupBox;
     private GuiCheckBox ignoreDurabilityBox;
+    private GuiCheckBox sharedOutputsBox;
     private int refreshCountdown = REFRESH_TICKS;
 
     public GuiSmartCrafter(EntityPlayer player, IInventory dummyInventory, ModuleSmartCrafter module) {
@@ -219,6 +223,14 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                         10,
                         10,
                         crafter.isIgnoreDurability()));
+        addButton(
+                sharedOutputsBox = new GuiCheckBox(
+                        ID_SHARED_OUTPUTS,
+                        guiLeft + 10,
+                        guiTop + SHARED_OUTPUTS_ROW_Y - 1,
+                        10,
+                        10,
+                        crafter.isSharedOutputSatellites()));
     }
 
     @Override
@@ -250,6 +262,12 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                 return;
             case ID_IGNORE_DURABILITY:
                 crafter.sendSetting(SmartCrafterSetting.IGNORE_DURABILITY, 0, ignoreDurabilityBox.change() ? 1 : 0);
+                return;
+            case ID_SHARED_OUTPUTS:
+                crafter.sendSetting(
+                        SmartCrafterSetting.SHARED_OUTPUT_SATELLITES,
+                        0,
+                        sharedOutputsBox.change() ? 1 : 0);
                 return;
             default:
                 super.actionPerformed(guibutton);
@@ -343,11 +361,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                 return;
             }
         }
-        String label = StringUtils.translate(GuiSmartCrafter.PREFIX + "IgnoreDurability");
-        int right = guiLeft + 24 + mc.fontRenderer.getStringWidth(label);
-        if (mouseX >= guiLeft + 10 && mouseX < right
-                && mouseY >= guiTop + IGNORE_ROW_Y - 1
-                && mouseY < guiTop + IGNORE_ROW_Y + 9) {
+        if (isOverCheckBoxRow(mouseX, mouseY, IGNORE_ROW_Y, "IgnoreDurability")) {
             GuiGraphics.drawToolTip(
                     mouseX,
                     mouseY,
@@ -355,7 +369,23 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                             StringUtils.translate(GuiSmartCrafter.PREFIX + "tooltip.IgnoreDurability1"),
                             StringUtils.translate(GuiSmartCrafter.PREFIX + "tooltip.IgnoreDurability2")),
                     EnumChatFormatting.WHITE);
+        } else if (isOverCheckBoxRow(mouseX, mouseY, SHARED_OUTPUTS_ROW_Y, "SharedOutputs")) {
+            GuiGraphics.drawToolTip(
+                    mouseX,
+                    mouseY,
+                    Arrays.asList(
+                            StringUtils.translate(GuiSmartCrafter.PREFIX + "tooltip.SharedOutputs1"),
+                            StringUtils.translate(GuiSmartCrafter.PREFIX + "tooltip.SharedOutputs2"),
+                            StringUtils.translate(GuiSmartCrafter.PREFIX + "tooltip.SharedOutputs3")),
+                    EnumChatFormatting.WHITE);
         }
+    }
+
+    /** Whether the mouse is over a checkbox row's box or label. */
+    private boolean isOverCheckBoxRow(int mouseX, int mouseY, int rowY, String labelKey) {
+        String label = StringUtils.translate(GuiSmartCrafter.PREFIX + labelKey);
+        int right = guiLeft + 24 + mc.fontRenderer.getStringWidth(label);
+        return mouseX >= guiLeft + 10 && mouseX < right && mouseY >= guiTop + rowY - 1 && mouseY < guiTop + rowY + 9;
     }
 
     @Override
@@ -447,6 +477,11 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                 StringUtils.translate(GuiSmartCrafter.PREFIX + "IgnoreDurability"),
                 24,
                 IGNORE_ROW_Y + 1,
+                0x404040);
+        mc.fontRenderer.drawString(
+                StringUtils.translate(GuiSmartCrafter.PREFIX + "SharedOutputs"),
+                24,
+                SHARED_OUTPUTS_ROW_Y + 1,
                 0x404040);
         String sets = StringUtils.translate(GuiSmartCrafter.PREFIX + "SetsInFlight") + ": "
                 + StringUtils.translate(GuiSmartCrafter.PREFIX + "Auto");
