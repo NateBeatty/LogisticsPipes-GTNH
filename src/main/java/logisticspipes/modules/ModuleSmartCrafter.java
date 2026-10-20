@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -55,6 +56,7 @@ import logisticspipes.network.packets.pipe.SmartCrafterUpdatePacket;
 import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.proxy.gregtech.GregTechInputTank;
 import logisticspipes.proxy.gregtech.GregTechNonConsumed;
 import logisticspipes.request.FluidCraftingTemplate;
 import logisticspipes.request.IReqCraftingTemplate;
@@ -144,6 +146,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * its ingredients go to. Empty when it holds none; it never holds only some of them.
      */
     private List<MachineClaims.Key> claimedMachines = Collections.emptyList();
+    /**
+     * Where other Smart Crafter recipes' results can turn up in the machines this module holds, worked out once per
+     * claim ({@link #collectForeignSources}). Empty when it holds none.
+     */
+    private List<ForeignSource> foreignSources = Collections.emptyList();
     /** Whether this module is in line for its machines. */
     private boolean awaitingMachines = false;
     /** Whether sets were released since the claim was taken, so a new owner always gets at least one turn. */
@@ -1217,8 +1224,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         lastNoFluidSinkWarn = t;
         String name = fluid == null ? "a fluid" : fluid.toString();
-        String msg = "Smart Satellite: no fluid sink can take " + name
-                + " to drain this output, so it is held in the machine.";
+        String msg = "Smart Crafter: no fluid sink can take " + name
+                + " to drain it from the machine, so it is held there.";
         World world = getWorld();
         if (world != null) {
             for (EntityPlayer player : world.playerEntities) {
@@ -1243,6 +1250,16 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
             PipeSmartSatellite sat) {
+        sendRemainingFluid(tank, fluid, drainSide, sat, false);
+    }
+
+    /**
+     * @param ingredient the fluid is a leftover ingredient, so it may sit in an input tank the machine's fluid handler
+     *                   never drains (a GT single-block's); it is then taken from that tank directly, the same way
+     *                   leftover item ingredients are taken straight from GT input slots
+     */
+    private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
+            PipeSmartSatellite sat, boolean ingredient) {
         int left = heldInTank(tank, fluid, drainSide);
         if (left <= 0) {
             return;
@@ -1259,6 +1276,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
         int wanted = Math.min(left, reply.getValue2());
         FluidStack drained = drainFromTank(tank, fluid, wanted, drainSide);
+        if ((drained == null || drained.amount <= 0) && ingredient && GREGTECH && tank instanceof TileEntity) {
+            drained = GregTechInputTank.drainInput((TileEntity) tank, fluid.makeFluidStack(wanted));
+        }
         if (drained != null && drained.amount > 0) {
             sendFluidBack(drained, sat);
         }
@@ -2777,6 +2797,108 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (stacks > 0) {
             _service.getCacheHolder().trigger(CacheTypes.Inventory);
         }
+        drainForeignResults();
+    }
+
+    /**
+     * One place another Smart Crafter recipe's results can come out of in a machine this module holds: the machine that
+     * recipe's chassis faces ({@code sat} null), or one of its output satellites' machines.
+     */
+    private static final class ForeignSource {
+
+        final ModuleSmartCrafter owner;
+        final PipeSmartSatellite sat;
+        final MachineClaims.Key key;
+
+        ForeignSource(ModuleSmartCrafter owner, PipeSmartSatellite sat, MachineClaims.Key key) {
+            this.owner = owner;
+            this.sat = sat;
+            this.key = key;
+        }
+    }
+
+    /**
+     * Finds every other Smart Crafter recipe whose results can come out of a machine this module just claimed. Done
+     * once per claim, so the drain doesn't look through every crafter each time: the claimed machines can't change
+     * without the claim being released.
+     */
+    private void collectForeignSources() {
+        List<ForeignSource> sources = new ArrayList<>();
+        for (ModuleSmartCrafter other : ModuleSmartCrafter.AllCrafters) {
+            if (other == this || other._service == null || other.getWorld() == null) {
+                continue;
+            }
+            MachineClaims.Key faced = other.machineKey();
+            if (faced != null && claimedMachines.contains(faced)) {
+                sources.add(new ForeignSource(other, null, faced));
+            }
+            for (PipeSmartSatellite sat : other.outputSatellites()) {
+                MachineClaims.Key key = machineKeyOf(sat);
+                if (key != null && claimedMachines.contains(key)) {
+                    sources.add(new ForeignSource(other, sat, key));
+                }
+            }
+        }
+        foreignSources = sources;
+    }
+
+    /**
+     * Takes out results of other Smart Crafter recipes that turned up in the machines this module holds after their
+     * crafter handed them over, when no order is waiting for them. A job can end while its last set is still in the
+     * machine (the order was filled early by a chanced extra output, so the last set's results weren't wanted), and
+     * those results come out once the next recipe already holds the machine. Nobody else takes them out: their crafter
+     * has no work, and this one only drains its own. Left there they fill the output slot and the machine stops.
+     * <p>
+     * Each machine's output slots are read once; only an item found there is checked against the recipes and orders.
+     * The results leave through their own recipe's chassis or satellite, as in its sweep. Ignores the owner's Cleanup
+     * checkbox, as {@link #drainUnorderedOutputs} does, since what's left blocks this module's job.
+     */
+    private void drainForeignResults() {
+        if (foreignSources.isEmpty()) {
+            return;
+        }
+        Map<MachineClaims.Key, Set<ItemIdentifier>> present = new HashMap<>();
+        for (ForeignSource source : foreignSources) {
+            ModuleSmartCrafter owner = source.owner;
+            if (owner._service == null || owner.getWorld() == null) {
+                continue;
+            }
+            SweepTarget target = owner.sweepTarget(source.sat);
+            if (target == null || !target.key.equals(source.key)) {
+                continue;
+            }
+            Set<ItemIdentifier> items = present.get(source.key);
+            if (items == null) {
+                items = new HashSet<>(extractor(target).getItems());
+                present.put(source.key, items);
+            }
+            if (items.isEmpty()) {
+                continue;
+            }
+            int stacks = 0;
+            for (int out = 0; out < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; out++) {
+                ItemIdentifierStack output = owner.getOutput(out);
+                if (output == null || output.getStackSize() <= 0
+                        || owner.isFluidSlot(outputInventorySlot(out))
+                        || (source.sat != null && !owner.comesOutOf(out, source.sat.satelliteId))
+                        || owner.outstandingResults(output) > 0) {
+                    continue;
+                }
+                for (Iterator<ItemIdentifier> it = items.iterator(); it.hasNext() && stacks < MAX_SWEEP_STACKS;) {
+                    ItemIdentifier item = it.next();
+                    // One of this recipe's own results is left to this module's own extraction and drain.
+                    if (!owner.isOurResult(item, output) || outputIndexFor(item) >= 0
+                            || (source.sat != null && anyCrafterWaitsFor(source.sat, item))) {
+                        continue;
+                    }
+                    stacks += owner.takeOut(target, item, MAX_SWEEP_STACKS - stacks);
+                    it.remove();
+                }
+            }
+            if (stacks > 0) {
+                owner._service.getCacheHolder().trigger(CacheTypes.Inventory);
+            }
+        }
     }
 
     @Override
@@ -2800,6 +2922,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         claimTakenTick = now();
         sweepBeforeRelease = true;
         gateDirty = true;
+        collectForeignSources();
     }
 
     @Override
@@ -3639,6 +3762,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             releasedThisTurn = false;
             claimTakenTick = now();
             sweepBeforeRelease = true;
+            collectForeignSources();
         }
         return !releasedThisTurn || !MachineClaims.hasOthersWaiting(this);
     }
@@ -3725,6 +3849,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     private void releaseClaim() {
         if (holdsClaim()) {
             claimedMachines = Collections.emptyList();
+            foreignSources = Collections.emptyList();
             MachineClaims.releaseAll(this);
         }
         // Leftover permission from finished sets must not carry over into the next turn.
@@ -4163,11 +4288,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * @return how many stacks were taken out
      */
     private int takeOut(SweepTarget target, ItemIdentifier item, int maxStacks) {
-        IInventory inv = target.inv;
-        IInventory extractable = inv instanceof ISidedInventory
-                ? new SidedInventoryMinecraftAdapter((ISidedInventory) inv, ForgeDirection.UNKNOWN, true)
-                : inv;
-        IInventoryUtil util = SimpleServiceLocator.inventoryUtilFactory.getInventoryUtil(extractable, target.access);
+        IInventoryUtil util = extractor(target);
         int stacks = 0;
         int left = util.itemCount(item);
         while (left > 0 && stacks < maxStacks) {
@@ -4180,6 +4301,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
             sendSwept(target, taken);
         }
         return stacks;
+    }
+
+    /** The target machine seen through its normal extraction rules, i.e. only its output slots. */
+    private static IInventoryUtil extractor(SweepTarget target) {
+        IInventory inv = target.inv;
+        IInventory extractable = inv instanceof ISidedInventory
+                ? new SidedInventoryMinecraftAdapter((ISidedInventory) inv, ForgeDirection.UNKNOWN, true)
+                : inv;
+        return SimpleServiceLocator.inventoryUtilFactory.getInventoryUtil(extractable, target.access);
     }
 
     /** This recipe's ingredients for the target machine. @return how many stacks were taken out */
@@ -4286,7 +4416,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
             if (fluid != null && !fluidStillNeededAt(key, fluid)) {
-                sendRemainingFluid(tank, fluid, side, sat);
+                sendRemainingFluid(tank, fluid, side, sat, true);
             }
         }
     }
