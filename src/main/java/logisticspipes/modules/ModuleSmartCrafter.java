@@ -389,7 +389,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * For a provider about to send an ingredient: the crafting buffer to park it in because the Smart Crafter it is for
      * has its gate shut, or null to send it as usual (not a gated Smart Crafter slot, gate open, or no buffer has
-     * room). The provider credits the crafter with {@link #creditBuffered} for what it sends there.
+     * room). The buffer chosen is the one nearest the machine the slot feeds. The provider credits the crafter with
+     * {@link #creditBuffered} for what it sends there.
      */
     public static ModuleCraftingBuffer bufferForShutGate(IGatedItemSink gate, ItemIdentifier item,
             IAdditionalTargetInformation info) {
@@ -401,7 +402,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (slot < 0 || !crafter.isGatedSlot(slot) || crafter.allowance[slot] > 0) {
             return null;
         }
-        return ModuleCraftingBuffer.withRoomFor(item);
+        IRouter target = crafter.slotRouter(slot);
+        return target == null ? null : ModuleCraftingBuffer.withRoomFor(item, target);
     }
 
     /**
@@ -542,7 +544,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         int left = wanted;
-        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
+        // Nearest first, so stock spread over several buffers comes from the closest one before the others.
+        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.nearestTo(target)) {
             for (ItemIdentifier item : bufferedKinds(buffer, slot)) {
                 if (left <= 0) {
                     return;
@@ -653,7 +656,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return;
         }
         int left = wanted;
-        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.AllBuffers) {
+        for (ModuleFluidCraftingBuffer buffer : ModuleFluidCraftingBuffer.nearestTo(target)) {
             if (left <= 0) {
                 break;
             }
@@ -931,9 +934,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return amount - take;
     }
 
-    /** A fluid buffer that can still take at least this much of this fluid, or null when none of them can. */
-    private ModuleFluidCraftingBuffer fluidBufferWithRoomFor(FluidIdentifier fluid, int amount) {
-        return ModuleFluidCraftingBuffer.withRoomFor(fluid, amount);
+    /**
+     * The fluid buffer nearest to {@code target} that can still take at least this much of this fluid, or null when
+     * none of them can.
+     */
+    private ModuleFluidCraftingBuffer fluidBufferWithRoomFor(FluidIdentifier fluid, int amount, IRouter target) {
+        return target == null ? null : ModuleFluidCraftingBuffer.withRoomFor(fluid, amount, target);
     }
 
     /* Fluid ingredients */
@@ -1120,7 +1126,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (wanted <= 0 && gate != null) {
             // Room for any of it is enough, the rest follows on later passes: waiting for room for the whole chunk
             // could wait for ever on a small or part-filled tank, while the consumer waits for this very fluid.
-            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, 1);
+            ModuleFluidCraftingBuffer buffer = fluidBufferWithRoomFor(fluid, 1, order.getRouter());
             if (buffer == null) {
                 getFluidOrders().deferSend();
                 return;
@@ -3423,7 +3429,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             ItemIdentifierStack material = getMaterials(slot);
             ItemIdentifier item = material.getItem();
-            if (!isBeingCraftedByAnother(item) && !rawWillBeBuffered(item)) {
+            if (!isBeingCraftedByAnother(item) && !rawWillBeBuffered(item, slot)) {
                 continue;
             }
             // On hand: on its way, parked in a buffer for this module, or already in the machine the slot goes to -
@@ -3444,7 +3450,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             FluidIdentifier fluid = getFluidIngredient(slot);
-            if (!isFluidBeingCraftedByAnother(fluid) && !rawFluidWillBeBuffered(fluid)) {
+            if (!isFluidBeingCraftedByAnother(fluid) && !rawFluidWillBeBuffered(fluid, slot)) {
                 continue;
             }
             int inTank;
@@ -3568,15 +3574,18 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     /**
      * Whether a raw item ingredient will be parked in a crafting buffer while the gate is shut, i.e. some buffer has
-     * room for it. Mirrors the provider's side of {@link #bufferForShutGate}, so the two agree on when to wait.
+     * room for it and can reach the slot's machine. Mirrors the provider's side of {@link #bufferForShutGate}, so the
+     * two agree on when to wait.
      */
-    private static boolean rawWillBeBuffered(ItemIdentifier item) {
-        return ModuleCraftingBuffer.withRoomFor(item) != null;
+    private boolean rawWillBeBuffered(ItemIdentifier item, int slot) {
+        IRouter target = slotRouter(slot);
+        return target != null && ModuleCraftingBuffer.withRoomFor(item, target) != null;
     }
 
     /** The fluid twin of {@link #rawWillBeBuffered}, matching {@code PipeFluidProvider}'s choice of buffer. */
-    private static boolean rawFluidWillBeBuffered(FluidIdentifier fluid) {
-        return fluid != null && ModuleFluidCraftingBuffer.withRoomFor(fluid, 1) != null;
+    private boolean rawFluidWillBeBuffered(FluidIdentifier fluid, int slot) {
+        IRouter target = slotRouter(slot);
+        return fluid != null && target != null && ModuleFluidCraftingBuffer.withRoomFor(fluid, 1, target) != null;
     }
 
     private int bufferStock(ItemIdentifier item) {

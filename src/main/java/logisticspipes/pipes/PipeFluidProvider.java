@@ -71,7 +71,7 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
             if (allowed <= 0) {
                 // Room for any of it is enough: the rest follows on later passes, the same as a gate that only lets
                 // part through. Waiting for room for the whole chunk could wait for ever on a small buffer.
-                toBuffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1);
+                toBuffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1, order.getRouter());
                 if (toBuffer == null) {
                     getFluidOrderManager().deferSend();
                     return;

@@ -1508,6 +1508,12 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             if (route == ResultRoute.TO_ORDER) {
                 // A Smart Crafter takes only what its released sets still need; the rest waits for its next set.
                 maxtosend = Math.min(maxtosend, gatedAllowance(nextOrder));
+            } else {
+                // Only take out what the chosen buffer has room for, so the result can be addressed to it.
+                ModuleCraftingBuffer buffer = resultBufferFor(nextOrder);
+                if (buffer != null) {
+                    maxtosend = Math.max(1, buffer.roomFor(nextOrder.getResource().getItem(), maxtosend));
+                }
             }
             // retrieve the new crafted items
             ItemStack extracted = null;
@@ -1564,7 +1570,16 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
                     // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
                     onResultBuffered(nextOrder, stackToSend.stackSize);
-                    sendUnrouted(tile, stackToSend, nextOrder.getInformation());
+                    // Addressed to the buffer nearest the machine it is for. If that buffer can't take the whole stack
+                    // after all, it goes out unaddressed as before, to whichever buffer sinks it.
+                    ModuleCraftingBuffer buffer = resultBufferFor(nextOrder);
+                    ItemIdentifier sentID = ItemIdentifier.get(stackToSend);
+                    if (buffer != null && buffer.hasRoomFor(sentID, stackToSend.stackSize)) {
+                        buffer.reserve(sentID, stackToSend.stackSize);
+                        sendFrom(tile, stackToSend, buffer.getBufferRouter(), buffer.getTargetInformation());
+                    } else {
+                        sendUnrouted(tile, stackToSend, nextOrder.getInformation());
+                    }
                     _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
                 } else if (nextOrder.getDestination() != null) {
                     SinkReply reply = LogisticsManager.canSink(
@@ -1624,13 +1639,18 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
      * is the nearest sink there is, so the result would go straight back where it came from.
      */
     private void sendUnrouted(AdjacentTile source, ItemStack stack, IAdditionalTargetInformation info) {
+        sendFrom(source, stack, -1, info);
+    }
+
+    /** {@link #sendUnrouted}, addressed to {@code destination} instead (-1: wherever it sinks). */
+    private void sendFrom(AdjacentTile source, ItemStack stack, int destination, IAdditionalTargetInformation info) {
         if (source.sender == null) {
-            _service.sendStack(stack, -1, ItemSendMode.Normal, info);
+            _service.sendStack(stack, destination, ItemSendMode.Normal, info);
             return;
         }
         IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack);
         item.getJamList().add(source.sender.getRouter().getSimpleID());
-        item.setDestination(-1);
+        item.setDestination(destination);
         item.setTransportMode(TransportMode.Active);
         item.setAdditionalTargetInformation(info);
         source.sender.queueRoutedItem(item, source.getSendOrientation(), ItemSendMode.Normal);
@@ -1675,7 +1695,16 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         if (gatedAllowance(order) > 0) {
             return ResultRoute.TO_ORDER;
         }
-        return bufferWithRoomFor(order.getResource().getItem()) != null ? ResultRoute.TO_BUFFER : ResultRoute.HOLD;
+        return resultBufferFor(order) != null ? ResultRoute.TO_BUFFER : ResultRoute.HOLD;
+    }
+
+    /**
+     * The crafting buffer a held-back result goes to: the one nearest the machine (or Smart Satellite) the order is
+     * for, so the trip from buffer to machine is short once the gate opens. Null when none that can reach it has room.
+     */
+    private static ModuleCraftingBuffer resultBufferFor(LogisticsItemOrder order) {
+        IRouter target = order.getRouter();
+        return target == null ? null : ModuleCraftingBuffer.withRoomFor(order.getResource().getItem(), target);
     }
 
     /** How much of the order's item its destination takes right now. Unlimited unless that is a gated Smart Crafter. */
@@ -1692,15 +1721,6 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         }
         IRouter router = order.getDestination().getRouter();
         return router == null ? null : IGatedItemSink.findTarget(router, order.getInformation());
-    }
-
-    private static ModuleCraftingBuffer bufferWithRoomFor(ItemIdentifier item) {
-        for (ModuleCraftingBuffer buffer : ModuleCraftingBuffer.AllBuffers) {
-            if (buffer.hasRoomFor(item, 1)) {
-                return buffer;
-            }
-        }
-        return null;
     }
 
     /**

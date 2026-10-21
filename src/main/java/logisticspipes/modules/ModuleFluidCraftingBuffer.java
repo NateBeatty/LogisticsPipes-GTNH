@@ -2,6 +2,7 @@ package logisticspipes.modules;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -28,6 +29,8 @@ import logisticspipes.logisticspipes.IRoutedItem.TransportMode;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.routing.ExitRoute;
+import logisticspipes.routing.IRouter;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -269,9 +272,52 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
         return world == null ? 0 : world.getTotalWorldTime();
     }
 
-    /** A loaded buffer that can still take this much of this fluid, or null when none of them can. */
-    public static ModuleFluidCraftingBuffer withRoomFor(FluidIdentifier fluid, int amount) {
+    /**
+     * The route cost from this buffer to {@code target}, or -1 when there is no route. Measured from the buffer, since
+     * that is the trip a buffered fluid makes to the machine it is for. A null target is distance 0 (no preference).
+     */
+    public double distanceTo(IRouter target) {
+        IRouter own = _service == null ? null : _service.getRouter();
+        if (own == null) {
+            return -1;
+        }
+        if (target == null || own.getSimpleID() == target.getSimpleID()) {
+            return 0;
+        }
+        double best = -1;
+        for (ExitRoute route : own.getDistanceTo(target)) {
+            if (best < 0 || route.distanceToDestination < best) {
+                best = route.distanceToDestination;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The loaded fluid buffers that can reach {@code target} (the machine a fluid is for, or its Smart Satellite),
+     * nearest first. Ties go to the lower router id, so the choice doesn't change from one call to the next.
+     */
+    public static List<ModuleFluidCraftingBuffer> nearestTo(IRouter target) {
+        Map<ModuleFluidCraftingBuffer, Double> distance = new HashMap<>();
         for (ModuleFluidCraftingBuffer buffer : AllBuffers) {
+            double d = buffer.distanceTo(target);
+            if (d >= 0) {
+                distance.put(buffer, d);
+            }
+        }
+        List<ModuleFluidCraftingBuffer> sorted = new ArrayList<>(distance.keySet());
+        sorted.sort(
+                Comparator.<ModuleFluidCraftingBuffer>comparingDouble(distance::get)
+                        .thenComparingInt(ModuleFluidCraftingBuffer::getBufferRouter));
+        return sorted;
+    }
+
+    /**
+     * The fluid buffer nearest to {@code target} that can still take this much of this fluid, or null when none that
+     * can reach it can.
+     */
+    public static ModuleFluidCraftingBuffer withRoomFor(FluidIdentifier fluid, int amount, IRouter target) {
+        for (ModuleFluidCraftingBuffer buffer : nearestTo(target)) {
             if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(fluid, amount)) {
                 return buffer;
             }

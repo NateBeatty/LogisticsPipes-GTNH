@@ -3,6 +3,8 @@ package logisticspipes.modules;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -26,6 +28,8 @@ import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
 import logisticspipes.pipes.basic.CoreRoutedPipe.ItemSendMode;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.routing.ExitRoute;
+import logisticspipes.routing.IRouter;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.SinkReply.FixedPriority;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -264,9 +268,52 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
         return new ChassiTargetInformation(getPositionInt());
     }
 
-    /** A loaded buffer with room for at least one of this item, or null when none has. */
-    public static ModuleCraftingBuffer withRoomFor(ItemIdentifier item) {
+    /**
+     * The route cost from this buffer to {@code target}, or -1 when there is no route. Measured from the buffer, since
+     * that is the trip a buffered item makes to the machine it is for. A null target is distance 0 (no preference).
+     */
+    public double distanceTo(IRouter target) {
+        IRouter own = _service == null ? null : _service.getRouter();
+        if (own == null) {
+            return -1;
+        }
+        if (target == null || own.getSimpleID() == target.getSimpleID()) {
+            return 0;
+        }
+        double best = -1;
+        for (ExitRoute route : own.getDistanceTo(target)) {
+            if (best < 0 || route.distanceToDestination < best) {
+                best = route.distanceToDestination;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The loaded buffers that can reach {@code target} (the machine an ingredient is for, or its Smart Satellite),
+     * nearest first. Ties go to the lower router id, so the choice doesn't change from one call to the next.
+     */
+    public static List<ModuleCraftingBuffer> nearestTo(IRouter target) {
+        Map<ModuleCraftingBuffer, Double> distance = new HashMap<>();
         for (ModuleCraftingBuffer buffer : AllBuffers) {
+            double d = buffer.distanceTo(target);
+            if (d >= 0) {
+                distance.put(buffer, d);
+            }
+        }
+        List<ModuleCraftingBuffer> sorted = new ArrayList<>(distance.keySet());
+        sorted.sort(
+                Comparator.<ModuleCraftingBuffer>comparingDouble(distance::get)
+                        .thenComparingInt(ModuleCraftingBuffer::getBufferRouter));
+        return sorted;
+    }
+
+    /**
+     * The buffer nearest to {@code target} with room for at least one of this item, or null when none that can reach
+     * it has room.
+     */
+    public static ModuleCraftingBuffer withRoomFor(ItemIdentifier item, IRouter target) {
+        for (ModuleCraftingBuffer buffer : nearestTo(target)) {
             if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(item, 1)) {
                 return buffer;
             }
