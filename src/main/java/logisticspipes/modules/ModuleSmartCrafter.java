@@ -2886,9 +2886,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 }
                 for (Iterator<ItemIdentifier> it = items.iterator(); it.hasNext() && stacks < MAX_SWEEP_STACKS;) {
                     ItemIdentifier item = it.next();
-                    // One of this recipe's own results is left to this module's own extraction and drain.
+                    // One of this recipe's own results is left to this module's own extraction and drain. An item some
+                    // crafter with work (this one included) loads into this machine is never touched: a GT input bus
+                    // lets everything be pulled from it, so another recipe's "leftover result" can be a live ingredient.
                     if (!owner.isOurResult(item, output) || outputIndexFor(item) >= 0
-                            || (source.sat != null && anyCrafterWaitsFor(source.sat, item))) {
+                            || (source.sat != null && anyCrafterWaitsFor(source.sat, item))
+                            || itemStillNeededAt(source.key, item, null)) {
                         continue;
                     }
                     stacks += owner.takeOut(target, item, MAX_SWEEP_STACKS - stacks);
@@ -4324,7 +4327,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (stack == null || stack.stackSize <= 0) {
                 continue;
             }
-            if (!isIngredientFor(stack, target.sat) || !isInputSlot(inv, machineSlot, stack, target.insertSide)) {
+            if (!isIngredientFor(stack, target.sat) || !isInputSlot(inv, machineSlot, stack, target.insertSide)
+                    || itemStillNeededAt(target.key, ItemIdentifier.get(stack), this)) {
                 continue;
             }
             ItemStack taken = inv.decrStackSize(machineSlot, stack.stackSize);
@@ -4496,7 +4500,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
             for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
                 if (crafter.isGatedFluidSlot(slot) && fluid.equals(crafter.getFluidIngredient(slot))
-                        && key.equals(crafter.fluidSlotMachineKey(slot))) {
+                        && key.equals(crafter.slotMachineKey(slot))) {
                     return true;
                 }
             }
@@ -4504,8 +4508,30 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return false;
     }
 
-    /** The claim key of the machine a fluid slot pours into: this module's own, or its Smart Satellite's. */
-    private MachineClaims.Key fluidSlotMachineKey(int slot) {
+    /**
+     * The item twin of {@link #fluidStillNeededAt}: whether a Smart Crafter other than {@code except} that still has
+     * work puts this item into the machine at {@code key}. A shared machine can't tell whose copy of an item is whose,
+     * and that crafter's was delivered for its job, so no provider would send it again.
+     */
+    private static boolean itemStillNeededAt(MachineClaims.Key key, ItemIdentifier item, ModuleSmartCrafter except) {
+        for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
+            if (crafter == except || crafter._service == null
+                    || crafter.getWorld() == null
+                    || !crafter.recipeHasWork()) {
+                continue;
+            }
+            for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+                if (crafter.isGatedSlot(slot) && crafter.sameIngredient(crafter.getMaterials(slot).getItem(), item)
+                        && key.equals(crafter.slotMachineKey(slot))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The claim key of the machine an ingredient slot goes into: this module's own, or its Smart Satellite's. */
+    private MachineClaims.Key slotMachineKey(int slot) {
         return advancedSatelliteIdArray[slot] == 0 ? machineKey() : machineKeyOf(endpointOf(slot));
     }
 
