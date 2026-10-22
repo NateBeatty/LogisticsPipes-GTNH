@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -422,27 +423,63 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 return;
             }
         }
-        int remaining = 0;
+        // A chassis shares one order queue, so its extras can come from several of its recipes. Each recipe's extras
+        // are offered by that recipe's own module: the order that spends them is then that recipe's, and only its
+        // sets have to make them. Offered as one lot from whichever module was asked first, the order could only be
+        // credited to one recipe, which would then wait for a set nobody sent ingredients for.
+        Map<ModuleCrafter, Integer> extrasByMaker = new LinkedHashMap<>();
         for (LogisticsItemOrder extra : _service.getItemOrderManager()) {
             if (extra.getType() == ResourceType.EXTRA) {
                 if (extra.getResource().getItem().equals(requestedItem)) {
-                    remaining += extra.getResource().stack.getStackSize();
+                    extrasByMaker.merge(
+                            extraMakerHere(extra.getMaker(), requestedItem),
+                            extra.getResource().stack.getStackSize(),
+                            Integer::sum);
                 }
             }
         }
-        // The result that was asked for, which is not always the first one: a module with several results answers for
-        // any of them.
-        ItemIdentifierStack result = null;
-        for (ItemIdentifierStack candidate : getConfiguredCraftResults()) {
-            if (candidate != null && requestedItem.matches(candidate.getItem(), IResource.MatchSettings.NORMAL)) {
-                result = candidate;
+        for (Map.Entry<ModuleCrafter, Integer> entry : extrasByMaker.entrySet()) {
+            if (tree.getMissingAmount() <= 0) {
                 break;
             }
+            entry.getKey().offerExtras(tree, root, requestedItem, entry.getValue());
         }
+        tree.setQueried(_service.getItemOrderManager());
+    }
+
+    /**
+     * The module of this chassis that made an extra and offers it. An extra with no maker recorded, or whose maker was
+     * since taken out of the chassis or no longer makes the item, falls to this module, as all extras did before.
+     */
+    private ModuleCrafter extraMakerHere(ModuleCrafter maker, IResource requestedItem) {
+        if (maker == null || maker == this || maker._service == null
+                || maker._service.getItemOrderManager() != _service.getItemOrderManager()
+                || maker.resultFor(requestedItem) == null) {
+            return this;
+        }
+        return maker;
+    }
+
+    /**
+     * The result that was asked for, which is not always the first one: a module with several results answers for any
+     * of them. Null if this module doesn't make it.
+     */
+    private ItemIdentifierStack resultFor(IResource requestedItem) {
+        for (ItemIdentifierStack candidate : getConfiguredCraftResults()) {
+            if (candidate != null && requestedItem.matches(candidate.getItem(), IResource.MatchSettings.NORMAL)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** Offers this module's extras of the requested item, as this module's promise. */
+    private void offerExtras(RequestTreeNode tree, RequestTree root, IResource requestedItem, int extras) {
+        ItemIdentifierStack result = resultFor(requestedItem);
         if (result == null) {
             return;
         }
-        remaining -= root.getAllPromissesFor(this, result.getItem());
+        int remaining = extras - root.getAllPromissesFor(this, result.getItem());
         if (remaining < 1) {
             return;
         }
@@ -462,20 +499,24 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     true);
             tree.addPromise(promise);
         }
-        tree.setQueried(_service.getItemOrderManager());
     }
 
     @Override
     public LogisticsItemOrder fullFill(LogisticsPromise promise, IRequestItems destination,
             IAdditionalTargetInformation info) {
         // Spending another request's surplus: remember whose, so cancelling that request can plan this part again.
+        // Only this module's own extras: canProvide offers each recipe's extras from that recipe's module.
         Map<CraftingJob, Integer> borrowed = null;
+        DictResource extras = null;
         if (promise instanceof LogisticsExtraDictPromise) {
-            borrowed = _service.getItemOrderManager().removeExtras(((LogisticsExtraDictPromise) promise).getResource());
+            extras = ((LogisticsExtraDictPromise) promise).getResource();
+        } else if (promise instanceof LogisticsExtraPromise) {
+            extras = new DictResource(new ItemIdentifierStack(promise.item, promise.numberOfItems), null);
         }
-        if (promise instanceof LogisticsExtraPromise) {
+        if (extras != null) {
+            DictResource spent = extras;
             borrowed = _service.getItemOrderManager()
-                    .removeExtras(new DictResource(new ItemIdentifierStack(promise.item, promise.numberOfItems), null));
+                    .removeExtras(spent, extra -> extraMakerHere(extra.getMaker(), spent) == this);
         }
         LogisticsItemOrder order;
         if (promise instanceof LogisticsDictPromise) {
@@ -489,6 +530,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                     info);
         }
         order.addBorrowed(borrowed);
+        order.setMaker(this);
         _service.spawnParticle(Particles.WhiteParticle, 2);
         return order;
     }
@@ -518,12 +560,14 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     @Override
     public void registerExtras(IPromise promise) {
+        LogisticsItemOrder extra;
         if (promise instanceof LogisticsDictPromise) {
-            _service.getItemOrderManager().addExtra(((LogisticsDictPromise) promise).getResource());
+            extra = _service.getItemOrderManager().addExtra(((LogisticsDictPromise) promise).getResource());
         } else {
             ItemIdentifierStack stack = new ItemIdentifierStack(promise.getItemType(), promise.getAmount());
-            _service.getItemOrderManager().addExtra(new DictResource(stack, null));
+            extra = _service.getItemOrderManager().addExtra(new DictResource(stack, null));
         }
+        extra.setMaker(this);
     }
 
     @Override

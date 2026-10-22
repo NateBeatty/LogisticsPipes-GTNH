@@ -5,6 +5,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import logisticspipes.interfaces.IChangeListener;
 import logisticspipes.interfaces.ILPPositionProvider;
@@ -88,6 +89,15 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
      * @return how much was taken from each job's surplus, so the new order can record what it borrowed
      */
     public Map<CraftingJob, Integer> removeExtras(DictResource resource) {
+        return removeExtras(resource, extra -> true);
+    }
+
+    /**
+     * Spends only the extras {@code mine} accepts: in a chassis, those of the recipe whose module offered them.
+     *
+     * @return how much was taken from each job's surplus, so the new order can record what it borrowed
+     */
+    public Map<CraftingJob, Integer> removeExtras(DictResource resource, Predicate<LogisticsItemOrder> mine) {
         Map<CraftingJob, Integer> borrowed = new HashMap<>();
         int itemsToRemove = resource.getRequestedAmount();
         DictResource.Identifier ident = resource.getIdentifier();
@@ -95,7 +105,7 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
         List<LogisticsItemOrder> toRemove = new LinkedList<>();
         while (iter.hasNext()) {
             LogisticsItemOrder order = iter.next();
-            if (order.getType() != ResourceType.EXTRA) continue;
+            if (order.getType() != ResourceType.EXTRA || !mine.test(order)) continue;
             if (order.getResource().getIdentifier().equals(ident)) {
                 if (itemsToRemove >= order.getAmount()) {
                     itemsToRemove -= order.getAmount();

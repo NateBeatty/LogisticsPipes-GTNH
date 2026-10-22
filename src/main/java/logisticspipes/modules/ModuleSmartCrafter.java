@@ -2315,7 +2315,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (outputSatelliteMachinePushes()) {
             return STATUS_SATELLITE_OUTPUT_PUSHES;
         }
-        if (!_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
+        if (!recipeHasWork()) {
             return STATUS_IDLE;
         }
         if (anyHeldByOther(machineKeys())) {
@@ -2775,7 +2775,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         int stacks = 0;
         for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
             ItemIdentifierStack output = getOutput(i);
-            if (output == null || outstandingResults(output) > 0) {
+            if (output == null || ordersWaitingFor(output) > 0) {
                 continue;
             }
             if (own == null) {
@@ -2887,7 +2887,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 if (output == null || output.getStackSize() <= 0
                         || owner.isFluidSlot(outputInventorySlot(out))
                         || (source.sat != null && !owner.comesOutOf(out, source.sat.satelliteId))
-                        || owner.outstandingResults(output) > 0) {
+                        || owner.ordersWaitingFor(output) > 0) {
                     continue;
                 }
                 for (Iterator<ItemIdentifier> it = items.iterator(); it.hasNext() && stacks < MAX_SWEEP_STACKS;) {
@@ -3905,14 +3905,30 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Results this crafter still has to produce. Orders in a chassis are shared by all its modules, so only orders for
-     * this module's result are counted. Extras (leftovers of a partial set) are included, since the machine makes them
-     * too.
+     * Results this crafter still has to produce. Orders in a chassis are shared by all its modules, so only orders this
+     * module's recipe took are counted: two recipes for the same item in one chassis would otherwise both see every
+     * order, and the one the planner didn't pick would take the machine and wait for ever for ingredients nobody sent.
+     * Extras (leftovers of a partial set) are included, since the machine makes them too.
      */
     private int outstandingResults(ItemIdentifierStack result) {
+        return ordersFor(result, true);
+    }
+
+    /**
+     * Results any order in this chassis is waiting for, whichever module's recipe took it. For deciding whether a
+     * result may be drained: another module's order for the same item still wants it, and any module may extract it.
+     */
+    private int ordersWaitingFor(ItemIdentifierStack result) {
+        return ordersFor(result, false);
+    }
+
+    private int ordersFor(ItemIdentifierStack result, boolean ownOnly) {
         int total = 0;
         for (LogisticsItemOrder order : _service.getItemOrderManager()) {
             if (order.getType() != ResourceType.CRAFTING && order.getType() != ResourceType.EXTRA) {
+                continue;
+            }
+            if (ownOnly && order.getMaker() != null && order.getMaker() != this) {
                 continue;
             }
             if (order.getResource().matches(result.getItem(), IResource.MatchSettings.NORMAL)) {
@@ -4202,7 +4218,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             if (own != null) {
                 for (int i = 0; i < OUTPUT_SLOTS && stacks < MAX_SWEEP_STACKS; i++) {
                     ItemIdentifierStack output = getOutput(i);
-                    if (output != null && outstandingResults(output) <= 0) {
+                    if (output != null && ordersWaitingFor(output) <= 0) {
                         stacks += takeOut(own, output.getItem(), MAX_SWEEP_STACKS - stacks);
                     }
                 }
@@ -4283,7 +4299,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 ItemIdentifierStack output = crafter.getOutput(out);
                 if (output != null && crafter.comesOutOf(out, sat.satelliteId)
                         && crafter.isOurResult(item, output)
-                        && crafter.outstandingResults(output) > 0
+                        && crafter.ordersWaitingFor(output) > 0
                         && crafter.smartSatelliteForId(sat.satelliteId) == sat) {
                     return true;
                 }

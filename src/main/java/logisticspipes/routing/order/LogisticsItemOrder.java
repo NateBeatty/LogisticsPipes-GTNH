@@ -2,10 +2,12 @@ package logisticspipes.routing.order;
 
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IRequestItems;
+import logisticspipes.modules.ModuleCrafter;
 import logisticspipes.request.resources.DictResource;
 import logisticspipes.routing.IRouter;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import lombok.Getter;
+import lombok.Setter;
 
 public class LogisticsItemOrder extends LogisticsOrder {
 
@@ -24,6 +26,15 @@ public class LogisticsItemOrder extends LogisticsOrder {
 
     @Getter
     private final IRequestItems destination;
+
+    /**
+     * The crafting module whose recipe makes this order's item, or null if it wasn't made by one. A chassis shares one
+     * order queue between its modules, so two recipes for the same item can't otherwise tell whose order this is.
+     * Server side only.
+     */
+    @Getter
+    @Setter
+    private ModuleCrafter maker;
 
     @Override
     public IRouter getRouter() {
