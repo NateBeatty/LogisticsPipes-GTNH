@@ -14,6 +14,7 @@ import net.minecraft.util.IIcon;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
+import logisticspipes.LogisticsPipes;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.request.RequestLog;
@@ -124,6 +125,7 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
         for (Entry<ItemIdentifier, Integer> target : targets.entrySet()) {
             ItemIdentifier item = target.getKey();
             if (_requestedItems.containsKey(item)) {
+                logSkipDiag(item);
                 continue; // one at a time
             }
             Integer haveCount = have.get(item.getUndamaged());
@@ -163,6 +165,7 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
                 haveCount = have.getStackSize();
             }
             if (_requestedItems.containsKey(needed.getItem())) {
+                logSkipDiag(needed.getItem());
                 continue;
             }
             int room = needed.getStackSize() - haveCount;
@@ -206,19 +209,36 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
 
     private void requestOne(ItemIdentifier item, IAdditionalTargetInformation info) {
         CraftingJob[] job = new CraftingJob[1];
-        boolean success = RequestTree.request(item.makeStack(1), this, new RequestLog() {
+        boolean[] placed = new boolean[1];
+        // Success is whether orders were placed, not what request() returns: when planning fails it fills the tree
+        // with stand-in crafting promises to work out what is missing, and then reports their amount, so a failed
+        // request can look like a full one. Counting that as one on its way, with nothing ever coming, stopped the
+        // item from being requested again.
+        RequestTree.request(item.makeStack(1), this, new RequestLog() {
 
             @Override
-            public void handleMissingItems(List<IResource> resources) {}
+            public void handleMissingItems(List<IResource> resources) {
+                // TEMP [Trickle DIAG]: what a failed request was missing.
+                StringBuilder missing = new StringBuilder();
+                for (IResource resource : resources) {
+                    ItemIdentifierStack display = resource.getDisplayItem();
+                    missing.append(missing.length() == 0 ? "" : ", ")
+                            .append(display == null ? resource.toString() : display.getFriendlyName());
+                }
+                LogisticsPipes.log.info("[Trickle DIAG] " + where() + " request for 1 " + item.getFriendlyName()
+                        + " failed, missing: " + missing);
+            }
 
             @Override
             public void handleSucessfullRequestOf(IResource resource, LinkedLogisticsOrderList parts) {
+                placed[0] = true;
                 job[0] = CraftingJobs.findJob(parts);
             }
 
             @Override
             public void handleSucessfullRequestOfList(List<IResource> resources, LinkedLogisticsOrderList parts) {}
         }, info);
+        boolean success = placed[0];
         _service.getDebug().log("Trickle Supplier: Request of one %s %s", item, success ? "succeeded" : "failed");
         if (!success) {
             setRequestFailed(true);
@@ -228,6 +248,69 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
         if (job[0] != null) {
             inFlight.put(item, new InFlight(job[0]));
         }
+    }
+
+    /** TEMP [Trickle DIAG] rate limit, per item. */
+    private final Map<ItemIdentifier, Long> lastSkipDiag = new HashMap<>();
+
+    /**
+     * TEMP [Trickle DIAG]: why an item isn't requested because one is thought to be on its way. At most once a minute
+     * per item. Remove once the "never requests again" stall is found.
+     */
+    private void logSkipDiag(ItemIdentifier item) {
+        long now = _world.getWorld().getTotalWorldTime();
+        Long last = lastSkipDiag.get(item);
+        if (last != null && now - last < 20 * 60) {
+            return;
+        }
+        lastSkipDiag.put(item, now);
+        StringBuilder line = new StringBuilder("[Trickle DIAG] ").append(where())
+                .append(" skipping ")
+                .append(item.getFriendlyName())
+                .append(": requested=")
+                .append(_requestedItems.get(item));
+        InFlight request = inFlight.get(item);
+        if (request == null) {
+            line.append(" | NO JOB TRACKED");
+        } else {
+            CraftingJob job = request.job;
+            line.append(" | job #").append(job.getId())
+                    .append(" done=")
+                    .append(job.isDone())
+                    .append(request.doneSince < 0 ? "" : " (for " + (now - request.doneSince) + " ticks)")
+                    .append(" cancelled=")
+                    .append(job.isCancelled())
+                    .append(" ordersLost=")
+                    .append(job.isOrdersLost())
+                    .append(" replanShort=")
+                    .append(job.isReplanShort())
+                    .append(" crafting=")
+                    .append(job.isCrafting())
+                    .append(" sent=")
+                    .append(job.getSent())
+                    .append("/")
+                    .append(job.getTotal());
+            for (CraftingJob.WaitingOn open : job.getWaitingOn()) {
+                line.append(" | open ").append(open.getType())
+                        .append(" ")
+                        .append(open.getItem() == null ? "?" : open.getItem().getFriendlyName())
+                        .append(" at ")
+                        .append(open.getPosition())
+                        .append(" done ")
+                        .append(open.getDone())
+                        .append("/")
+                        .append(open.getRequired())
+                        .append(" idle ")
+                        .append(open.getIdleTicks())
+                        .append("t");
+            }
+        }
+        LogisticsPipes.log.info(line.toString());
+    }
+
+    /** TEMP [Trickle DIAG]: where this module is, to tell suppliers apart in the log. */
+    private String where() {
+        return "(" + getX() + ", " + getY() + ", " + getZ() + ")";
     }
 
     @Override
