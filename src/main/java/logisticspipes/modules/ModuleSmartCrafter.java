@@ -1149,7 +1149,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             getFluidOrders().sendSuccessfull(drained.amount, false, item);
             onFluidResultSent(drained);
             if (outstandingFluid(fluid) <= 0) {
-                sendRemainingFluid(tank, fluid, drainSide, viaSatellite ? sat : null);
+                sendSetLeftover(tank, fluid, drainSide, viaSatellite ? sat : null);
             }
             return;
         }
@@ -1180,7 +1180,21 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (outstandingFluid(fluid) <= 0) {
             // That was the last of what was ordered, so anything still in the machine is left over from a set that
             // made more than the request needed. Send it on now, while this module is the one acting on the machine.
-            sendRemainingFluid(tank, fluid, drainSide, viaSatellite ? sat : null);
+            sendSetLeftover(tank, fluid, drainSide, viaSatellite ? sat : null);
+        }
+    }
+
+    /**
+     * {@link #sendRemainingFluid} for what a finished set made beyond the order, counted towards that set like the
+     * part that filled the order. An order smaller than a set (a Fluid Supplier topping up a tank) otherwise only
+     * credits its own share, the set never reads as finished, and while new orders keep arriving the gate never
+     * resets: the module holds a released set that no longer exists and never hands its machine over.
+     */
+    private void sendSetLeftover(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
+            PipeSmartSatellite sat) {
+        int sent = sendRemainingFluid(tank, fluid, drainSide, sat, false);
+        if (sent > 0) {
+            onFluidResultSent(fluid.makeFluidStack(sent));
         }
     }
 
@@ -1263,12 +1277,13 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * @param ingredient the fluid is a leftover ingredient, so it may sit in an input tank the machine's fluid handler
      *                   never drains (a GT single-block's); it is then taken from that tank directly, the same way
      *                   leftover item ingredients are taken straight from GT input slots
+     * @return the litres sent
      */
-    private void sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
+    private int sendRemainingFluid(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
             PipeSmartSatellite sat, boolean ingredient) {
         int left = heldInTank(tank, fluid, drainSide);
         if (left <= 0) {
-            return;
+            return 0;
         }
         IRouter senderRouter = sat != null ? sat.getRouter() : getRouter();
         // Probe with the whole leftover, not 1 mB: PipeFluidBasic.sinkAmount caps its answer at the stack's amount, so
@@ -1278,16 +1293,18 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 .getBestReply(fluid.makeFluidStack(left), senderRouter, new ArrayList<Integer>());
         if (reply.getValue1() == 0) {
             warnNoFluidSink(fluid);
-            return;
+            return 0;
         }
         int wanted = Math.min(left, reply.getValue2());
         FluidStack drained = drainFromTank(tank, fluid, wanted, drainSide);
         if ((drained == null || drained.amount <= 0) && ingredient && GREGTECH && tank instanceof TileEntity) {
             drained = GregTechInputTank.drainInput((TileEntity) tank, fluid.makeFluidStack(wanted));
         }
-        if (drained != null && drained.amount > 0) {
-            sendFluidBack(drained, sat);
+        if (drained == null || drained.amount <= 0) {
+            return 0;
         }
+        sendFluidBack(drained, sat);
+        return drained.amount;
     }
 
     /** Whether this module has a job of its own, of either kind. */
