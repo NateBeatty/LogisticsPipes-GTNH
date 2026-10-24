@@ -5,10 +5,12 @@
 package logisticspipes.pipes;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.TreeMap;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.Item;
@@ -244,6 +246,60 @@ public class PipeItemsRequestLogistics extends CoreRoutedPipe implements IReques
             list.add(new Pair<>(item.getKey(), amount));
         }
         return list;
+    }
+
+    // getAvailableItems hands a computer one wrapped object per item type, which runs an OpenComputers machine out of
+    // memory on a large network. getAvailableItemsPage returns the same stock as plain text, a page at a time, from a
+    // sorted copy that one listing reuses.
+    private static final long STOCK_CACHE_MILLIS = 60_000;
+    private long[] stockKeys;
+    private long[] stockCounts;
+    private long stockTime;
+
+    private static long stockKey(long id, long data) {
+        return (id << 32) | (data & 0xFFFFFFFFL);
+    }
+
+    private void refreshStockCache() {
+        Map<ItemIdentifier, Integer> items = SimpleServiceLocator.logisticsManager
+                .getAvailableItems(getRouter().getIRoutersByCost());
+        // Items that differ only by NBT share a key and are added together.
+        TreeMap<Long, Long> sorted = new TreeMap<>();
+        for (Entry<ItemIdentifier, Integer> item : items.entrySet()) {
+            ItemIdentifier id = item.getKey();
+            sorted.merge(stockKey(Item.getIdFromItem(id.item), id.itemDamage), (long) item.getValue(), Long::sum);
+        }
+        stockKeys = new long[sorted.size()];
+        stockCounts = new long[sorted.size()];
+        int i = 0;
+        for (Entry<Long, Long> entry : sorted.entrySet()) {
+            stockKeys[i] = entry.getKey();
+            stockCounts[i] = entry.getValue();
+            i++;
+        }
+        stockTime = System.currentTimeMillis();
+    }
+
+    @CCCommand(
+            description = "Returns up to count available items after the given item ID and data (afterId -1 starts a new listing) as lines \"id data count\", sorted by ID then data")
+    @CCQueued
+    public String getAvailableItemsPage(Number afterId, Number afterData, Number count) {
+        boolean start = afterId.longValue() < 0;
+        if (start || stockKeys == null || System.currentTimeMillis() - stockTime > STOCK_CACHE_MILLIS) {
+            refreshStockCache();
+        }
+        int from = 0;
+        if (!start) {
+            int pos = Arrays.binarySearch(stockKeys, stockKey(afterId.longValue(), afterData.longValue()));
+            from = pos >= 0 ? pos + 1 : -pos - 1;
+        }
+        int to = (int) Math.min(stockKeys.length, from + Math.max(1, Math.min(count.longValue(), 10000)));
+        StringBuilder page = new StringBuilder();
+        for (int i = from; i < to; i++) {
+            page.append(stockKeys[i] >>> 32).append(' ').append((int) stockKeys[i]).append(' ')
+                    .append(stockCounts[i]).append('\n');
+        }
+        return page.toString();
     }
 
     @CCCommand(description = "Asks for all craftable ItemIdentifier inside the Logistics Network")

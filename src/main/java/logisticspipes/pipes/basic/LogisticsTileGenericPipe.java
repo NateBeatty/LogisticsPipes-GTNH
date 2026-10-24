@@ -1161,7 +1161,10 @@ public class LogisticsTileGenericPipe extends TileEntity
         }
     }
 
+    // ModularScreen is client-only. Without this the server can't list this
+    // class's methods, which OpenComputers does before every call to a pipe.
     @Override
+    @SideOnly(Side.CLIENT)
     public ModularScreen createScreen(PosGuiData data, ModularPanel mainPanel) {
         return new ModularScreen("LogisticsPipes", mainPanel);
     }
