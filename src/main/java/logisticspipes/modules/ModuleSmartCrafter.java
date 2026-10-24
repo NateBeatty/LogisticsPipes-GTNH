@@ -3042,7 +3042,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         extractedPerOutput[output] += amount;
         int finished = 0;
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            int perSet = mostPerSet(i);
+            int perSet = creditPerSet(i);
             if (perSet > 0) {
                 finished = Math.max(finished, extractedPerOutput[i] / perSet);
             }
@@ -3066,22 +3066,36 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * The most of this slot's result one set can yield, counting every slot that makes the same thing. A recipe may
-     * make one item twice, 6 Wood Pulp plus 1 more at 80%, and both arrive as the same item credited to the first slot.
-     * Dividing by the 6 alone would count more sets finished than really were, and a crafter that thinks its last set
-     * is done hands the machine over while it is still working.
+     * How much of this slot's result one set puts into orders, counting every slot that makes the same thing: a recipe
+     * may make one item twice, and both arrive as the same item credited to the first slot.
+     * <p>
+     * Only the slots the planner promises count: Products and counted Byproducts. A plain Byproduct of the same item (6
+     * Wood Pulp plus 1 more at 80%) is never promised, so no order takes its share; it goes to storage uncounted, or
+     * fills an order early in place of a promised one. Orders take exactly the promised amount per set, so dividing by
+     * the 7 left every finished set short of a full count. While new orders kept coming the gate never reset, and the
+     * module held a released set that no longer existed, never releasing the next. Counting a set finished early, when
+     * a byproduct filled the orders before the last set came out, is harmless: those results aren't wanted, and
+     * {@link #drainForeignResults} clears them if the machine has been handed over by then.
+     * <p>
+     * Only when no slot of the result is promised is the most a set can yield used instead.
      */
-    private int mostPerSet(int output) {
+    private int creditPerSet(int output) {
         int perSet = resultPerSet(output);
         if (perSet <= 0) {
             return perSet;
         }
+        int promised = 0;
+        int most = 0;
         for (int i = 0; i < OUTPUT_SLOTS; i++) {
-            if (i != output && sameResult(i, output)) {
-                perSet += Math.max(0, resultPerSet(i));
+            if (i == output || sameResult(i, output)) {
+                int amount = Math.max(0, resultPerSet(i));
+                most += amount;
+                if (outputRole[i] != OutputRole.BYPRODUCT) {
+                    promised += amount;
+                }
             }
         }
-        return perSet;
+        return promised > 0 ? promised : most;
     }
 
     /** Whether two result slots make the same item, or the same fluid. */
