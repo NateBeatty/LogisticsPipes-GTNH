@@ -27,6 +27,7 @@ import gnu.trove.map.TObjectIntMap;
 import gnu.trove.map.hash.TObjectIntHashMap;
 import logisticspipes.api.IMUICompatiblePipe;
 import logisticspipes.compat.ModularUIHelper;
+import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequireReliableFluidTransport;
 import logisticspipes.migration.LegacyHelper;
@@ -44,7 +45,7 @@ import lombok.extern.log4j.Log4j2;
 
 @Log4j2
 public class PipeFluidSupplierMk2 extends FluidRoutedPipe
-        implements IRequestFluid, IRequireReliableFluidTransport, IMUICompatiblePipe {
+        implements IRequestFluid, IRequireReliableFluidTransport, IRequestCancelListener, IMUICompatiblePipe {
 
     private boolean _lastRequestFailed = false;
 
@@ -399,6 +400,11 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
 
     @Override
     public void liquidNotInserted(FluidIdentifier item, int amount) {}
+
+    @Override
+    public void fluidRequestCancelled(FluidIdentifier fluid, int amount) {
+        decreaseRequested(fluid, amount);
+    }
 
     @Override
     public void onWrenchClicked(EntityPlayer player) {

@@ -17,6 +17,7 @@ import net.minecraftforge.fluids.IFluidHandler;
 
 import logisticspipes.LogisticsPipes;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
+import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
@@ -37,7 +38,8 @@ import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierInventory;
 import logisticspipes.utils.item.ItemIdentifierStack;
 
-public class PipeItemsFluidSupplier extends CoreRoutedPipe implements IRequestItems, IRequireReliableTransport {
+public class PipeItemsFluidSupplier extends CoreRoutedPipe
+        implements IRequestItems, IRequireReliableTransport, IRequestCancelListener {
 
     private boolean _lastRequestFailed = false;
 
@@ -295,6 +297,11 @@ public class PipeItemsFluidSupplier extends CoreRoutedPipe implements IRequestIt
 
     @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        decreaseRequested(item);
+    }
+
+    @Override
+    public void itemRequestCancelled(ItemIdentifierStack item, IAdditionalTargetInformation info) {
         decreaseRequested(item);
     }
 

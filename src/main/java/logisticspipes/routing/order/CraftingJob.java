@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.network.LPDataInputStream;
 import logisticspipes.network.LPDataOutputStream;
@@ -179,6 +180,7 @@ public class CraftingJob {
             } else if (placed.order.getType() == ResourceType.PROVIDER) {
                 deliveries++;
             }
+            tellCancelListener(placed.order);
             if (!placed.manager.cancel(placed.order)) {
                 // Not in its queue any more, e.g. the pipe was unloaded or broken. Close it here so the job can end.
                 placed.order.setFinished(true);
@@ -198,6 +200,30 @@ public class CraftingJob {
             }
         }
         return new CancelResult(crafts, deliveries, replannedJobs, shortJobs);
+    }
+
+    /**
+     * Tells a supplier that an order delivering to it won't come, so it stops counting the rest as on its way. Only
+     * the part not yet sent is reported; what is already moving still arrives and is counted off as usual.
+     */
+    private static void tellCancelListener(LogisticsOrder order) {
+        int amount = order.getAmount();
+        if (amount <= 0) {
+            return;
+        }
+        if (order instanceof LogisticsItemOrder) {
+            LogisticsItemOrder itemOrder = (LogisticsItemOrder) order;
+            if (itemOrder.getDestination() instanceof IRequestCancelListener) {
+                ((IRequestCancelListener) itemOrder.getDestination())
+                        .itemRequestCancelled(itemOrder.getResource().stack.clone(), order.getInformation());
+            }
+        } else if (order instanceof LogisticsFluidOrder) {
+            LogisticsFluidOrder fluidOrder = (LogisticsFluidOrder) order;
+            if (fluidOrder.getDestination() instanceof IRequestCancelListener) {
+                ((IRequestCancelListener) fluidOrder.getDestination())
+                        .fluidRequestCancelled(fluidOrder.getFluid(), amount);
+            }
+        }
     }
 
     /** What a cancel stopped, for telling the player. */

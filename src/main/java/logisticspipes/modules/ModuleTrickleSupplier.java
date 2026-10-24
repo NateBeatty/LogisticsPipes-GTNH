@@ -86,11 +86,11 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
                 continue;
             }
             CraftingJob job = request.job;
-            if (job.isOrdersLost() || job.isCancelled()) {
+            // A cancel from elsewhere needs nothing here: it reports the unsent part as lost, and a cancelled job
+            // counts as done, so anything still moving is waited for like any other finished request.
+            if (job.isOrdersLost()) {
                 _service.getDebug().log("Trickle Supplier: request for %s lost its crafter, requesting again", item);
-                if (!job.isCancelled()) {
-                    job.cancel();
-                }
+                job.cancel();
                 forget(item);
                 it.remove();
                 continue;

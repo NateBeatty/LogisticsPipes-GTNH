@@ -28,6 +28,7 @@ import logisticspipes.interfaces.IModuleInventoryReceive;
 import logisticspipes.interfaces.IModuleWatchReciver;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IRequest;
+import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.interfaces.routing.IRequestItems;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
 import logisticspipes.interfaces.routing.ITargetSlotInformation;
@@ -61,7 +62,8 @@ import lombok.Getter;
 import lombok.Setter;
 
 public class ModuleActiveSupplier extends LogisticsGuiModule
-        implements IRequestItems, IRequireReliableTransport, IClientInformationProvider, IHUDModuleHandler,
+        implements IRequestItems, IRequireReliableTransport, IRequestCancelListener, IClientInformationProvider,
+        IHUDModuleHandler,
         IModuleWatchReciver, IModuleInventoryReceive, ISimpleInventoryEventHandler {
 
     private final PlayerCollectionList localModeWatchers = new PlayerCollectionList();
@@ -592,6 +594,11 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
 
     @Override
     public void itemCouldNotBeSend(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        itemLost(item, info);
+    }
+
+    @Override
+    public void itemRequestCancelled(ItemIdentifierStack item, IAdditionalTargetInformation info) {
         itemLost(item, info);
     }
 
