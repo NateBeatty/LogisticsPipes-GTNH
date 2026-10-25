@@ -57,6 +57,7 @@ import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
 import logisticspipes.proxy.gregtech.GregTechInputTank;
+import logisticspipes.proxy.gregtech.GregTechMultiStack;
 import logisticspipes.proxy.gregtech.GregTechNonConsumed;
 import logisticspipes.request.FluidCraftingTemplate;
 import logisticspipes.request.IReqCraftingTemplate;
@@ -4055,6 +4056,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
             return 0;
         }
         int[] slots = insertableSlots(inv, side);
+        Boolean multiStack = GREGTECH && inv instanceof TileEntity
+                ? GregTechMultiStack.takesMultipleStacks((TileEntity) inv)
+                : null;
         ItemStack[] simulated = new ItemStack[slots.length];
         if (!emptyMachine) {
             for (int i = 0; i < slots.length; i++) {
@@ -4073,7 +4077,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             int pending = allowance[slot] + inFlight[slot];
             if (pending > 0 && isGatedSlotAt(slot, sat)
-                    && !place(inv, side, slots, simulated, getMaterials(slot), pending, perSet[slot])) {
+                    && !place(inv, side, slots, simulated, getMaterials(slot), pending, perSet[slot], multiStack)) {
                 return 0;
             }
         }
@@ -4083,7 +4087,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
                 if (isGatedSlotAt(slot, sat)) {
                     ItemIdentifierStack material = getMaterials(slot);
-                    if (!place(inv, side, slots, simulated, material, material.getStackSize(), perSet[slot])) {
+                    if (!place(inv, side, slots, simulated, material, material.getStackSize(), perSet[slot],
+                            multiStack)) {
                         return sets;
                     }
                 }
@@ -4617,24 +4622,29 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * Places count of the material into the simulated slots, filling matching stacks before empty slots.
      * <p>
-     * Many GT machines won't hold more than one stack of an item type even when they have free slots, so the machine is
-     * never given more than one stack of an item in total, or one set's worth if the recipe needs more than that.
+     * Many GT machines won't hold more than one stack of an item type even when they have free slots. When the machine's
+     * own setting can be read ({@link GregTechMultiStack}) it is followed: with several stacks allowed only the free
+     * slots limit it, with one stack the machine is never given more than one in total. Otherwise the machine is never
+     * given more than one stack of an item in total, or one set's worth if the recipe needs more than that.
      *
-     * @param perSet how many of this item one recipe set needs
+     * @param perSet     how many of this item one recipe set needs
+     * @param multiStack whether the machine takes several stacks of one item, or null when that isn't known
      * @return false if it doesn't all fit
      */
     private static boolean place(IInventory inv, ForgeDirection side, int[] slots, ItemStack[] simulated,
-            ItemIdentifierStack material, int count, int perSet) {
+            ItemIdentifierStack material, int count, int perSet, Boolean multiStack) {
         ItemStack proto = material.getItem().makeNormalStack(1);
         int limit = Math.min(inv.getInventoryStackLimit(), proto.getMaxStackSize());
-        int held = 0;
-        for (ItemStack stack : simulated) {
-            if (isSameItem(stack, proto)) {
-                held += stack.stackSize;
+        if (!Boolean.TRUE.equals(multiStack)) {
+            int held = 0;
+            for (ItemStack stack : simulated) {
+                if (isSameItem(stack, proto)) {
+                    held += stack.stackSize;
+                }
             }
-        }
-        if (held + count > Math.max(limit, perSet)) {
-            return false;
+            if (held + count > (multiStack == null ? Math.max(limit, perSet) : limit)) {
+                return false;
+            }
         }
         for (int i = 0; i < slots.length && count > 0; i++) {
             ItemStack existing = simulated[i];
