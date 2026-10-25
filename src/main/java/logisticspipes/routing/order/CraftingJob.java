@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import logisticspipes.LogisticsPipes;
 import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.modules.ModuleSmartCrafter;
 import logisticspipes.network.LPDataInputStream;
@@ -169,6 +170,16 @@ public class CraftingJob {
         Set<IRouter> destinations = new HashSet<>();
         for (Placed placed : new ArrayList<>(orders)) {
             if (placed.order.isFinished()) {
+                if (placed.order.isRoot()) {
+                    // TEMP [Cancel DIAG]
+                    LogisticsPipes.log.info(
+                            "[Cancel DIAG] job #" + id
+                                    + " root "
+                                    + placed.order.getType()
+                                    + " "
+                                    + placed.order.getAsDisplayItem()
+                                    + " already finished, not told");
+                }
                 continue;
             }
             managers.add(placed.manager);
@@ -206,8 +217,26 @@ public class CraftingJob {
      * Tells a supplier that an order delivering to it won't come, so it stops counting the rest as on its way. Only
      * the part not yet sent is reported; what is already moving still arrives and is counted off as usual.
      */
-    private static void tellCancelListener(LogisticsOrder order) {
+    private void tellCancelListener(LogisticsOrder order) {
         int amount = order.getAmount();
+        Object destination = order instanceof LogisticsItemOrder ? ((LogisticsItemOrder) order).getDestination()
+                : order instanceof LogisticsFluidOrder ? ((LogisticsFluidOrder) order).getDestination() : null;
+        // TEMP [Cancel DIAG]: every open order a cancel drops, where it was going and whether that was told.
+        IRouter router = order.getRouter();
+        LogisticsPipes.log.info(
+                "[Cancel DIAG] job #" + id
+                        + " "
+                        + order.getType()
+                        + (order.isRoot() ? " root " : " ")
+                        + (order instanceof LogisticsFluidOrder ? "fluid " + ((LogisticsFluidOrder) order).getFluid()
+                                : String.valueOf(order.getAsDisplayItem()))
+                        + " amount="
+                        + amount
+                        + " -> "
+                        + (destination == null ? "null" : destination.getClass().getSimpleName())
+                        + " at "
+                        + (router == null ? "?" : router.getLPPosition())
+                        + (destination instanceof IRequestCancelListener && amount > 0 ? " TOLD" : " not told"));
         if (amount <= 0) {
             return;
         }
