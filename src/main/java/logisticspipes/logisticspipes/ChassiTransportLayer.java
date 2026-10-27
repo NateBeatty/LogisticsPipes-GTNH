@@ -4,6 +4,7 @@ import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
 
 import logisticspipes.LogisticsPipes;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.pipes.PipeLogisticsChassi;
@@ -49,18 +50,19 @@ public class ChassiTransportLayer extends TransportLayer {
         for (int slot = 0; slot < _chassiPipe.getChassiSize(); slot++) {
             LogisticsModule module = chassis.getSubModule(slot);
             if (module instanceof IGatedItemSink && ((IGatedItemSink) module).declinesUntrackedItem(id)) {
-                // TEMP [ItemGate DIAG]
-                LogisticsPipes.log.info(
-                        "[ItemGate DIAG] chassis " + _chassiPipe.getX()
-                                + ","
-                                + _chassiPipe.getY()
-                                + ","
-                                + _chassiPipe.getZ()
-                                + " DECLINED untracked "
-                                + item.getItemIdentifierStack()
-                                + " (info "
-                                + item.getAdditionalTargetInformation()
-                                + ")");
+                if (Configs.DEBUG_ITEM_GATE) {
+                    LogisticsPipes.log.info(
+                            "[ItemGate DIAG] chassis " + _chassiPipe.getX()
+                                    + ","
+                                    + _chassiPipe.getY()
+                                    + ","
+                                    + _chassiPipe.getZ()
+                                    + " DECLINED untracked "
+                                    + item.getItemIdentifierStack()
+                                    + " (info "
+                                    + item.getAdditionalTargetInformation()
+                                    + ")");
+                }
                 _chassiPipe.notifyOfItemArival(item.getInfo());
                 return false;
             }

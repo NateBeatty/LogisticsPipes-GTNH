@@ -60,6 +60,14 @@ public class Configs {
 
     public static int MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY = 10000;
 
+    // Debug logging, all off by default: switched on in the config to trace a stall, then off again
+    public static boolean DEBUG_ITEM_GATE = false;
+    public static boolean DEBUG_FLUID_GATE = false;
+    public static boolean DEBUG_FLUID_ORDER = false;
+    public static boolean DEBUG_CANCEL = false;
+    public static boolean DEBUG_TRICKLE = false;
+    public static boolean DEBUG_SMART_CRAFTER_RECIPE = false;
+
     private static boolean loaded = false;
 
     public static void load() {
@@ -260,6 +268,49 @@ public class Configs {
                 Configs.MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY,
                 "Sets the maximum amount for a liquid that can be held in a fluid pipe. Default value: 10000 (1000 equals 1 Bucket for normal fluids). If you are playing GTNH this value represents liters (10000 = 10000L).")
             .getInt();
+
+        Configs.DEBUG_ITEM_GATE = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "itemGate",
+                        Configs.DEBUG_ITEM_GATE,
+                        "Log every change to a Smart Crafter's item gate: claims, releases, sends, arrivals, losses and finished sets. [ItemGate DIAG] in the log. Very verbose.")
+                .getBoolean(false);
+        Configs.DEBUG_FLUID_GATE = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "fluidGate",
+                        Configs.DEBUG_FLUID_GATE,
+                        "Log a Smart Crafter's fluid slots (credit, allowance, in flight) about once a second. [FluidGate DIAG] in the log. Verbose.")
+                .getBoolean(false);
+        Configs.DEBUG_FLUID_ORDER = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "fluidOrder",
+                        Configs.DEBUG_FLUID_ORDER,
+                        "Log every order a Fluid Provider takes and every send that finds its tanks empty. [FluidOrder DIAG] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_CANCEL = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "cancel",
+                        Configs.DEBUG_CANCEL,
+                        "Log what cancelling a crafting job drops, and how Fluid Supplier Mk2s re-request afterwards. [Cancel DIAG] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_TRICKLE = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "trickleSupplier",
+                        Configs.DEBUG_TRICKLE,
+                        "Log why a Trickle Supplier's request failed or is held back. [Trickle DIAG] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_SMART_CRAFTER_RECIPE = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "smartCrafterRecipe",
+                        Configs.DEBUG_SMART_CRAFTER_RECIPE,
+                        "Log the results a Smart Crafter reads from its recipe. [SmartCrafter DEBUG] in the log.")
+                .getBoolean(false);
 
         Configs.CONFIGURATION.save();
     }

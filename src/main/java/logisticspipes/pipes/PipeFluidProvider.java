@@ -194,13 +194,16 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
     }
 
     /*
-     * TEMP [FluidOrder DIAG]: every fluid order this provider takes and every send that finds its tanks empty, with what
-     * the tanks hold and what is already promised, to find how a Smart Crafter ends up short of a fluid ingredient
-     * (Meteoric Steel oxygen, 2026-10-25). Remove once that is known.
+     * [FluidOrder DIAG], with the fluidOrder debug config: every fluid order this provider takes and every send that
+     * finds its tanks empty, with what the tanks hold and what is already promised. For tracing a Smart Crafter left
+     * short of a fluid ingredient.
      */
 
     private void fluidOrderDiag(String event, FluidIdentifier fluid, IRequestFluid destination,
             IAdditionalTargetInformation info) {
+        if (!Configs.DEBUG_FLUID_ORDER) {
+            return;
+        }
         Integer free = getAvailableFluids().get(fluid);
         LogisticsPipes.log.info(
                 "[FluidOrder DIAG] provider " + getX()

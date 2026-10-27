@@ -14,6 +14,7 @@ import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.IFluidHandler;
 
 import logisticspipes.LogisticsPipes;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestFluid;
@@ -419,22 +420,23 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         if (liquid.amount > expected) {
             FluidStack unexpected = liquid.copy();
             unexpected.amount = liquid.amount - expected;
-            // TEMP [ItemGate DIAG]
-            LogisticsPipes.log.info(
-                    "[ItemGate DIAG] sat " + satelliteId
-                            + " at "
-                            + getX()
-                            + ","
-                            + getY()
-                            + ","
-                            + getZ()
-                            + " FLUID DECLINED "
-                            + unexpected.amount
-                            + "mB "
-                            + fluid
-                            + " (expected "
-                            + expected
-                            + "mB)");
+            if (Configs.DEBUG_ITEM_GATE) {
+                LogisticsPipes.log.info(
+                        "[ItemGate DIAG] sat " + satelliteId
+                                + " at "
+                                + getX()
+                                + ","
+                                + getY()
+                                + ","
+                                + getZ()
+                                + " FLUID DECLINED "
+                                + unexpected.amount
+                                + "mB "
+                                + fluid
+                                + " (expected "
+                                + expected
+                                + "mB)");
+            }
             sendOnToStorage(unexpected, arrivingItem.output);
             if (expected <= 0) {
                 return true;

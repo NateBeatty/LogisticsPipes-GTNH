@@ -27,6 +27,7 @@ import gnu.trove.map.TObjectIntMap;
 import gnu.trove.map.hash.TObjectIntHashMap;
 import logisticspipes.api.IMUICompatiblePipe;
 import logisticspipes.compat.ModularUIHelper;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequireReliableFluidTransport;
@@ -238,8 +239,8 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
 
     @Override
     public void throttledUpdateEntity() {
-        // TEMP [Cancel DIAG]
-        boolean diag = diagUpdates > 0;
+        // [Cancel DIAG]
+        boolean diag = Configs.DEBUG_CANCEL && diagUpdates > 0;
         if (diag) {
             diagUpdates--;
             log.info(
@@ -431,21 +432,23 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
 
     @Override
     public void fluidRequestCancelled(FluidIdentifier fluid, int amount) {
-        // TEMP [Cancel DIAG]
         int before = _requestedItems.get(fluid);
         decreaseRequested(fluid, amount);
-        log.info(
-                "[Cancel DIAG] Fluid Supplier Mk2 {} told {} {} cancelled: requested {} -> {} (all: {})",
-                getLPPosition(),
-                amount,
-                fluid,
-                before,
-                _requestedItems.get(fluid),
-                _requestedItems);
-        diagUpdates = 5;
+        // [Cancel DIAG]
+        if (Configs.DEBUG_CANCEL) {
+            log.info(
+                    "[Cancel DIAG] Fluid Supplier Mk2 {} told {} {} cancelled: requested {} -> {} (all: {})",
+                    getLPPosition(),
+                    amount,
+                    fluid,
+                    before,
+                    _requestedItems.get(fluid),
+                    _requestedItems);
+            diagUpdates = 5;
+        }
     }
 
-    /** TEMP [Cancel DIAG]: how many more updates to explain after a cancel. */
+    /** [Cancel DIAG]: how many more updates to explain after a cancel. */
     private int diagUpdates = 0;
 
     @Override

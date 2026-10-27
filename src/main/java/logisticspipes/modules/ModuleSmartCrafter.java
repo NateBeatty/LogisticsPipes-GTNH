@@ -2079,7 +2079,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
         String summary = debug.toString();
-        if (!summary.equals(loggedInterests)) {
+        if (Configs.DEBUG_SMART_CRAFTER_RECIPE && !summary.equals(loggedInterests)) {
             loggedInterests = summary;
             LogisticsPipes.log.info("[SmartCrafter DEBUG] results:" + summary + " -> interests=" + interests);
         }
@@ -3479,8 +3479,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             }
         }
 
-        // TEMP [FluidGate DIAG]: why buffered fluid is or isn't pulled. Remove once the double-request stall is found.
-        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+        // [FluidGate DIAG]: why buffered fluid is or isn't pulled.
+        for (int slot = 0; Configs.DEBUG_FLUID_GATE && slot < INGREDIENT_SLOTS; slot++) {
             if (isFluidSlot(slot) && (fluidBuffered[slot] > 0 || allowance[slot] > 0)) {
                 logFluidGateDiag(slot, wanted, setsNeeded);
             }
@@ -3507,9 +3507,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /*
-     * TEMP [ItemGate DIAG]: every change to the item side of the gate (claims, releases, sends, arrivals, losses,
-     * finished sets, sweeps), with the gate's counts and what the machines hold, to find how a stray ingredient ends up
-     * in a shared machine. Remove once that is known.
+     * [ItemGate DIAG], with the itemGate debug config: every change to the item side of the gate (claims, releases,
+     * sends, arrivals, losses, finished sets, sweeps), with the gate's counts and what the machines hold. For tracing a
+     * stall or a stray ingredient in a shared machine.
      */
 
     private void itemGateDiag(String event) {
@@ -3517,7 +3517,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     private void itemGateDiag(String event, boolean withMachine) {
-        if (_service == null || getWorld() == null) {
+        if (!Configs.DEBUG_ITEM_GATE || _service == null || getWorld() == null) {
             return;
         }
         StringBuilder line = new StringBuilder("[ItemGate DIAG] ").append(getX())
@@ -3604,19 +3604,32 @@ public class ModuleSmartCrafter extends ModuleCrafter
         return contents.length() == 0 ? "empty" : contents.toString();
     }
 
-    /** TEMP [FluidGate DIAG] rate limit. */
+    /** [FluidGate DIAG] rate limit. */
     private long lastFluidDiagTick = 0;
 
-    /** TEMP [FluidGate DIAG]: one line per fluid slot with buffer credit or allowance, at most once a second. */
+    /**
+     * [FluidGate DIAG], with the fluidGate debug config: one line per fluid slot with buffer credit or allowance, at
+     * most once a second.
+     */
     private void logFluidGateDiag(int slot, int wanted, int setsNeeded) {
-        if (now() - lastFluidDiagTick < 20) {
+        if (!Configs.DEBUG_FLUID_GATE || now() - lastFluidDiagTick < 20) {
             return;
         }
         lastFluidDiagTick = now();
         FluidIdentifier fluid = getFluidIngredient(slot);
-        IFluidHandler tank = facedTank();
-        int held = tank == null ? -1 : heldInTank(tank, fluid, insertionSide());
-        int room = tank == null ? -1 : tank.fill(insertionSide(), fluid.makeFluidStack(1000000), false);
+        // The tank the slot's fluid is poured into: the Smart Satellite's machine, or the one this module faces.
+        IFluidHandler tank;
+        ForgeDirection side;
+        if (advancedSatelliteIdArray[slot] == 0) {
+            tank = facedTank();
+            side = insertionSide();
+        } else {
+            PipeSmartSatellite sat = fluidSatelliteFor(slot);
+            tank = sat == null ? null : satelliteTank(sat);
+            side = tank == null ? null : sat.getMachineFacing().getOpposite();
+        }
+        int held = tank == null ? -1 : heldInTank(tank, fluid, side);
+        int room = tank == null ? -1 : tank.fill(side, fluid.makeFluidStack(1000000), false);
         LogisticsPipes.log.info(
                 "[FluidGate DIAG] " + getX()
                         + ","
@@ -4114,8 +4127,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     private void resetGate() {
-        // TEMP [ItemGate DIAG]: only when there was something to reset, since this runs on every idle update.
-        boolean diagWorthIt = setsReleased > 0 || holdsClaim();
+        // [ItemGate DIAG]: only when there was something to reset, since this runs on every idle update.
+        boolean diagWorthIt = Configs.DEBUG_ITEM_GATE && (setsReleased > 0 || holdsClaim());
         for (int slot = 0; slot < INGREDIENT_SLOTS && !diagWorthIt; slot++) {
             diagWorthIt = isGatedSlot(slot) && (allowance[slot] > 0 || inFlight[slot] > 0);
         }
