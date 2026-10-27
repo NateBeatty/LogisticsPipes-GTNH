@@ -320,6 +320,12 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         }
     }
 
+    /** An order for this satellite that never left its provider: lost to the crafter, but nothing was on its way. */
+    @Override
+    public void itemCouldNotBeSend(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        ModuleSmartCrafter.whileReportingUnsent(() -> super.itemCouldNotBeSend(item, info));
+    }
+
     /* -- Fluid arrival / not-inserted: a container carries no word of its crafter, so the crafters sort it out -- */
 
     /**
@@ -341,7 +347,22 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     @Override
     public void sendFailed(FluidIdentifier fluid, Integer amount) {
-        liquidLost(fluid, amount);
+        fluidSendFailed(fluid, amount, null);
+    }
+
+    /**
+     * A provider couldn't send an order for this satellite: its tanks were empty. Unlike a container lost on the way,
+     * nothing of it was counted as on its way, so there is nothing to refund; the crafter the order was for asks for
+     * it again instead, or its set waits for good.
+     */
+    public void fluidSendFailed(FluidIdentifier fluid, Integer amount, IAdditionalTargetInformation info) {
+        ModuleSmartCrafter c = ModuleSmartCrafter.crafterOf(info);
+        if (c == null) {
+            c = crafterWantingFluid(fluid);
+        }
+        if (c != null) {
+            c.fluidSendFailedAt(this, fluid, amount == null ? 0 : amount);
+        }
     }
 
     /* -- Gating: delegate to the per-slot allowance of the crafter the delivery is for -- */

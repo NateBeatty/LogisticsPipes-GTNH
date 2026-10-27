@@ -1433,11 +1433,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // A provider couldn't send it (its tanks ran dry). Nothing else would ever ask again, and the set would wait
         // for
         // ever with the rest of its ingredients delivered, so it is asked for again shortly, like a lost item.
+        fluidSendFailedAt(null, value1, value2 == null ? 0 : value2);
+    }
+
+    /**
+     * A provider couldn't send fluid ordered for the machine {@code sat} pours into (null: this module's own), because
+     * its tanks ran dry. Nothing else would ever ask again, and the set would wait for ever with the rest of its
+     * ingredients delivered, so it is asked for again shortly, like a lost item.
+     */
+    public void fluidSendFailedAt(PipeSmartSatellite sat, FluidIdentifier fluid, int amount) {
         gateDirty = true;
         if (CraftingJobs.currentIsCancelled()) {
             return;
         }
-        queueLostFluid(value1, value2 == null ? 0 : value2, CraftingJobs.current());
+        queueLostFluid(fluidSlotFor(fluid, sat), fluid, amount, CraftingJobs.current());
     }
 
     /**
@@ -1455,10 +1464,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
             int take = Math.min(max - taken, fluidBuffered[slot]);
             fluidBuffered[slot] -= take;
             taken += take;
+            // Which request it was for is not known here; the re-request runs as a job of its own.
+            queueLostFluid(slot, fluid, take, null);
         }
         if (taken > 0) {
-            // Which request it was for is not known here; the re-request runs as a job of its own.
-            queueLostFluid(fluid, taken, null);
             gateDirty = true;
         }
         return taken;
@@ -1472,13 +1481,16 @@ public class ModuleSmartCrafter extends ModuleCrafter
 
     private static final class LostFluid {
 
+        /** The ingredient slot it was for, which says where it is asked to: the slot's Smart Satellite, or here. */
+        final int slot;
         final FluidIdentifier fluid;
         int amount;
         /** The request it was for, which the re-request joins; null if it isn't known. */
         final CraftingJob job;
         long retryAt;
 
-        LostFluid(FluidIdentifier fluid, int amount, CraftingJob job, long retryAt) {
+        LostFluid(int slot, FluidIdentifier fluid, int amount, CraftingJob job, long retryAt) {
+            this.slot = slot;
             this.fluid = fluid;
             this.amount = amount;
             this.job = job;
@@ -1486,10 +1498,20 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
     }
 
-    private void queueLostFluid(FluidIdentifier fluid, int amount, CraftingJob job) {
-        if (fluid != null && amount > 0) {
-            lostFluids.add(new LostFluid(fluid, amount, job, now() + LOST_FLUID_RETRY_TICKS));
+    /** Queues a re-request for a fluid slot. A slot of -1 (the recipe changed since) has nowhere to go and is dropped. */
+    private void queueLostFluid(int slot, FluidIdentifier fluid, int amount, CraftingJob job) {
+        if (slot >= 0 && fluid != null && amount > 0) {
+            lostFluids.add(new LostFluid(slot, fluid, amount, job, now() + LOST_FLUID_RETRY_TICKS));
         }
+    }
+
+    /**
+     * Where a lost fluid is asked to: the slot's Smart Satellite, or this module for a slot without one. Asked here,
+     * a satellite slot's fluid would be turned away by this module and go to storage. Null while the satellite can't
+     * be reached.
+     */
+    private IRequestFluid lostFluidTarget(int slot) {
+        return advancedSatelliteIdArray[slot] == 0 ? this : fluidSatelliteFor(slot);
     }
 
     /**
@@ -1512,15 +1534,26 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 continue;
             }
             CraftingJob job = lost.job != null && lost.job.isDone() ? null : lost.job;
-            if (job == null && !recipeHasWork()) {
-                // Nothing left here to use it for: it would only come back as an orphan.
+            if ((job == null && !recipeHasWork()) || !lost.fluid.equals(getFluidIngredient(lost.slot))) {
+                // Nothing left here to use it for (or the slot no longer takes it): it would only come back as an
+                // orphan.
                 it.remove();
+                continue;
+            }
+            IRequestFluid target = lostFluidTarget(lost.slot);
+            if (target == null) {
+                lost.retryAt = t + LOST_FLUID_RETRY_TICKS * 4;
                 continue;
             }
             int received;
             CraftingJob previous = CraftingJobs.enter(job);
             try {
-                received = RequestTree.requestFluidPartial(lost.fluid, lost.amount, this, null);
+                received = RequestTree.requestFluidPartial(
+                        lost.fluid,
+                        lost.amount,
+                        target,
+                        null,
+                        ingredientInformation(lost.slot));
             } finally {
                 CraftingJobs.exit(previous);
             }
@@ -3225,13 +3258,38 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     @Override
+    public void itemCouldNotBeSend(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        whileReportingUnsent(() -> super.itemCouldNotBeSend(item, info));
+    }
+
+    /** Set while an order that never left its provider is reported lost, so {@link #itemLost} leaves the gate alone. */
+    private static boolean reportingUnsent;
+
+    /**
+     * Runs a report of an order that could not be sent. It reaches {@link #itemLost} like a delivery lost on the way,
+     * through the chassis or a Smart Satellite, so the gate needs telling which one it is.
+     */
+    public static void whileReportingUnsent(Runnable report) {
+        boolean was = reportingUnsent;
+        reportingUnsent = true;
+        try {
+            report.run();
+        } finally {
+            reportingUnsent = was;
+        }
+    }
+
+    @Override
     public void itemLost(ItemIdentifierStack item, IAdditionalTargetInformation info) {
         super.itemLost(item, info);
         int slot = ingredientSlot(info);
         // TEMP [ItemGate DIAG]
         itemGateDiag("LOST " + item.getStackSize() + "x" + diagItemName(item.getItem()) + " for s" + slot
-                + " cancelledJob=" + CraftingJobs.currentIsCancelled());
-        if (slot >= 0) {
+                + " cancelledJob=" + CraftingJobs.currentIsCancelled() + (reportingUnsent ? " (never sent)" : ""));
+        // A provider that found its stock gone (another provider on the same inventory sent it first) reports the order
+        // as lost, but nothing left: it was never counted on its way, and the allowance it was waiting for is still
+        // there for the re-request. Taking it off inFlight would forget a different delivery still in the pipes.
+        if (slot >= 0 && !reportingUnsent) {
             int wasInFlight = inFlight[slot];
             inFlight[slot] = Math.max(0, wasInFlight - item.getStackSize());
             // The crafter re-requests lost items, so let the replacement through. Not for a cancelled job, which gets

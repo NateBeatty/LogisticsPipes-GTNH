@@ -2,6 +2,7 @@ package logisticspipes.routing.order;
 
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IRequestFluid;
+import logisticspipes.pipes.PipeSmartSatellite;
 import logisticspipes.routing.IRouter;
 import logisticspipes.utils.FluidIdentifier;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -41,6 +42,11 @@ public class LogisticsFluidOrder extends LogisticsOrder {
 
     @Override
     public void sendFailed() {
+        // A Smart Satellite is shared by several recipes, so it is told which crafter slot the order was for.
+        if (destination instanceof PipeSmartSatellite) {
+            ((PipeSmartSatellite) destination).fluidSendFailed(fluid, amount, getInformation());
+            return;
+        }
         destination.sendFailed(fluid, amount);
     }
 
