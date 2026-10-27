@@ -971,11 +971,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * The fluid buffer nearest to {@code target} that can still take at least this much of this fluid, or null when
-     * none of them can.
+     * The fluid buffer a result parked for {@code target} goes to (see {@link ModuleFluidCraftingBuffer#chooseFor}), or
+     * null when none of them can take at least this much of this fluid.
      */
     private ModuleFluidCraftingBuffer fluidBufferWithRoomFor(FluidIdentifier fluid, int amount, IRouter target) {
-        return target == null ? null : ModuleFluidCraftingBuffer.withRoomFor(fluid, amount, target);
+        return target == null ? null : ModuleFluidCraftingBuffer.chooseFor(fluid, amount, target);
     }
 
     /* Fluid ingredients */

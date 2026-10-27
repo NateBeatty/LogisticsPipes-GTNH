@@ -60,6 +60,9 @@ public class Configs {
 
     public static int MAX_LOGISTICS_FLUID_TRANSPORT_INNER_CAPACITY = 10000;
 
+    public static int FLUID_BUFFER_SAME_FLUID_MIN_RANGE = 8;
+    public static int FLUID_BUFFER_SAME_FLUID_MAX_RANGE = 64;
+
     // Debug logging, all off by default: switched on in the config to trace a stall, then off again
     public static boolean DEBUG_ITEM_GATE = false;
     public static boolean DEBUG_FLUID_GATE = false;
@@ -67,6 +70,7 @@ public class Configs {
     public static boolean DEBUG_CANCEL = false;
     public static boolean DEBUG_TRICKLE = false;
     public static boolean DEBUG_SMART_CRAFTER_RECIPE = false;
+    public static boolean DEBUG_FLUID_BUFFER = false;
 
     private static boolean loaded = false;
 
@@ -269,6 +273,25 @@ public class Configs {
                 "Sets the maximum amount for a liquid that can be held in a fluid pipe. Default value: 10000 (1000 equals 1 Bucket for normal fluids). If you are playing GTNH this value represents liters (10000 = 10000L).")
             .getInt();
 
+        Configs.FLUID_BUFFER_SAME_FLUID_MIN_RANGE = Math.max(
+                Configs.CONFIGURATION
+                        .get(
+                                Configuration.CATEGORY_GENERAL,
+                                "fluidBufferSameFluidMinRange",
+                                Configs.FLUID_BUFFER_SAME_FLUID_MIN_RANGE,
+                                "How much further away (route cost, about one per pipe block) than the nearest Fluid Crafting Buffer a buffer that already holds a fluid may be, and still be chosen for more of that fluid, while every buffer tank in reach is empty. Keeps one fluid in one tank instead of spread over several. Grows towards fluidBufferSameFluidMaxRange as the tanks fill up. Both 0 always uses the nearest buffer.")
+                        .getInt(),
+                0);
+        Configs.FLUID_BUFFER_SAME_FLUID_MAX_RANGE = Math.max(
+                Configs.CONFIGURATION
+                        .get(
+                                Configuration.CATEGORY_GENERAL,
+                                "fluidBufferSameFluidMaxRange",
+                                Configs.FLUID_BUFFER_SAME_FLUID_MAX_RANGE,
+                                "The same as fluidBufferSameFluidMinRange, once no buffer tank in reach is empty. Never less than the minimum.")
+                        .getInt(),
+                0);
+
         Configs.DEBUG_ITEM_GATE = Configs.CONFIGURATION
                 .get(
                         Configs.CATEGORY_DEBUG,
@@ -310,6 +333,13 @@ public class Configs {
                         "smartCrafterRecipe",
                         Configs.DEBUG_SMART_CRAFTER_RECIPE,
                         "Log the results a Smart Crafter reads from its recipe. [SmartCrafter DEBUG] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_FLUID_BUFFER = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "fluidBuffer",
+                        Configs.DEBUG_FLUID_BUFFER,
+                        "Log every choice of Fluid Crafting Buffer for a delivery: the range, each buffer in reach with its distance, whether it holds the fluid and has room, and the one chosen. [FluidBuffer DIAG] in the log.")
                 .getBoolean(false);
 
         Configs.CONFIGURATION.save();

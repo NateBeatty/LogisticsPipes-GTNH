@@ -22,6 +22,7 @@ import net.minecraftforge.fluids.IFluidHandler;
 
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
+import logisticspipes.LogisticsPipes;
 import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IFluidContainerReceiver;
 import logisticspipes.logisticspipes.IRoutedItem;
@@ -313,16 +314,149 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
     }
 
     /**
-     * The fluid buffer nearest to {@code target} that can still take this much of this fluid, or null when none that
-     * can reach it can.
+     * Whether some fluid buffer that can reach {@code target} has room for this much of this fluid. The same choice as
+     * {@link #chooseFor}, without logging it, for asking ahead whether a delivery will be buffered.
      */
     public static ModuleFluidCraftingBuffer withRoomFor(FluidIdentifier fluid, int amount, IRouter target) {
-        for (ModuleFluidCraftingBuffer buffer : nearestTo(target)) {
-            if (buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(fluid, amount)) {
-                return buffer;
+        return choose(fluid, amount, target, false);
+    }
+
+    /**
+     * The fluid buffer a delivery of this much of this fluid for {@code target} goes to, or null when none that can
+     * reach it has room. Logged with the fluidBuffer debug config.
+     * <p>
+     * That is the nearest one with room, unless a buffer already holding the fluid (or with some on its way) has room
+     * too and is not too much further away. Most tanks hold a single fluid, so spreading one fluid over every nearest
+     * buffer uses up tanks other fluids then can't go in. How much further is worth it grows as the free tanks run
+     * out, from {@link Configs#FLUID_BUFFER_SAME_FLUID_MIN_RANGE} with every tank free to
+     * {@link Configs#FLUID_BUFFER_SAME_FLUID_MAX_RANGE} with none.
+     */
+    public static ModuleFluidCraftingBuffer chooseFor(FluidIdentifier fluid, int amount, IRouter target) {
+        return choose(fluid, amount, target, Configs.DEBUG_FLUID_BUFFER);
+    }
+
+    private static ModuleFluidCraftingBuffer choose(FluidIdentifier fluid, int amount, IRouter target, boolean log) {
+        List<ModuleFluidCraftingBuffer> reachable = nearestTo(target);
+        double range = sameFluidRange(reachable);
+        StringBuilder line = log ? new StringBuilder() : null;
+        ModuleFluidCraftingBuffer nearest = null;
+        ModuleFluidCraftingBuffer chosen = null;
+        double limit = 0;
+        for (ModuleFluidCraftingBuffer buffer : reachable) {
+            boolean room = buffer.getBufferRouter() >= 0 && buffer.hasRoomFor(fluid, amount);
+            double distance = buffer.distanceTo(target);
+            boolean holds = buffer.holdsOrAwaits(fluid);
+            if (line != null) {
+                line.append(" | ")
+                        .append(buffer.getX())
+                        .append(",")
+                        .append(buffer.getY())
+                        .append(",")
+                        .append(buffer.getZ())
+                        .append(" d=")
+                        .append(Math.round(distance))
+                        .append(holds ? " holds" : "")
+                        .append(room ? "" : " no room");
+            }
+            if (!room || chosen != null) {
+                continue;
+            }
+            if (nearest == null) {
+                nearest = buffer;
+                limit = distance + range;
+            } else if (distance > limit) {
+                // Nothing further can be chosen; carry on only to finish the log line.
+                chosen = nearest;
+                if (line == null) {
+                    break;
+                }
+                continue;
+            }
+            // Nearest first, so the first one holding the fluid is the nearest of them.
+            if (holds) {
+                chosen = buffer;
+                if (line == null) {
+                    break;
+                }
             }
         }
-        return null;
+        if (chosen == null) {
+            chosen = nearest;
+        }
+        if (line != null) {
+            LogisticsPipes.log.info(
+                    "[FluidBuffer DIAG] " + amount
+                            + "mB+ "
+                            + fluid
+                            + " for router "
+                            + (target == null ? -1 : target.getSimpleID())
+                            + ": range "
+                            + Math.round(range)
+                            + " (nearest with room "
+                            + (nearest == null ? "none" : "at d=" + Math.round(nearest.distanceTo(target)))
+                            + ") -> "
+                            + (chosen == null ? "NO BUFFER"
+                                    : chosen.getX() + "," + chosen.getY() + "," + chosen.getZ()
+                                            + (chosen == nearest ? " (nearest)" : " (holds it)"))
+                            + line);
+        }
+        return chosen;
+    }
+
+    /**
+     * How much further than the nearest buffer with room a buffer already holding the fluid may be: the minimum range
+     * while every tank of the reachable buffers is free, growing to the maximum as they fill up.
+     */
+    private static double sameFluidRange(List<ModuleFluidCraftingBuffer> reachable) {
+        int min = Configs.FLUID_BUFFER_SAME_FLUID_MIN_RANGE;
+        int max = Math.max(min, Configs.FLUID_BUFFER_SAME_FLUID_MAX_RANGE);
+        int used = 0;
+        int total = 0;
+        for (ModuleFluidCraftingBuffer buffer : reachable) {
+            int[] slots = buffer.tankSlotsInUse();
+            used += slots[0];
+            total += slots[1];
+        }
+        return total == 0 ? min : min + (max - min) * (double) used / total;
+    }
+
+    /**
+     * How many of this buffer's tanks hold a fluid, and how many there are: one for a single-fluid tank, one per
+     * internal tank for a tank that holds several. An empty single-fluid tank with a fluid on its way counts as in use,
+     * since nothing else can go in it now.
+     *
+     * @return {in use, total}
+     */
+    private int[] tankSlotsInUse() {
+        IFluidHandler tank = getTank();
+        if (tank == null) {
+            return new int[] { 0, 0 };
+        }
+        FluidTankInfo[] tanks = tank.getTankInfo(ForgeDirection.UNKNOWN);
+        if (tanks == null || tanks.length == 0) {
+            tanks = tank.getTankInfo(storageSide());
+        }
+        if (tanks == null || tanks.length == 0) {
+            return new int[] { 0, 0 };
+        }
+        int used = 0;
+        for (FluidTankInfo info : tanks) {
+            if (info != null && info.fluid != null && info.fluid.amount > 0) {
+                used++;
+            }
+        }
+        if (used == 0 && tanks.length == 1) {
+            expireReservations();
+            if (!incoming.isEmpty()) {
+                used = 1;
+            }
+        }
+        return new int[] { used, tanks.length };
+    }
+
+    /** Whether this buffer already holds some of this fluid, or has some on its way. */
+    private boolean holdsOrAwaits(FluidIdentifier fluid) {
+        return getBufferFluidAvailable(fluid) > 0 || incomingOf(fluid) > 0;
     }
 
     /**
