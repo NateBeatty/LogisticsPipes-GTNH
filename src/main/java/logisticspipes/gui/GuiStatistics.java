@@ -1,6 +1,7 @@
 package logisticspipes.gui;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -108,9 +109,32 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         }
     }
 
+    /**
+     * A line of the request list: one request, or several live ones for the same item from the same requester (a
+     * supplier topping up) shown as one, which opens to list them.
+     */
+    private static final class ListEntry {
+
+        final List<JobRow> rows = new ArrayList<>();
+
+        boolean isGroup() {
+            return rows.size() > 1;
+        }
+
+        JobRow first() {
+            return rows.get(0);
+        }
+    }
+
     private final List<JobRow> jobRows = new ArrayList<>();
     private JobSort jobSort = JobSort.OLDEST;
     private int jobPage = 0;
+    /** The group whose requests are listed (see {@link #groupKeyOf}), or null for the full list. */
+    private List<Object> openGroup = null;
+    private String openGroupTitle = "";
+    /** The full list's page, to go back to when the group is closed. */
+    private int pageBeforeGroup = 0;
+    private GuiButton groupBackButton;
     private long endedCounter = 0;
     /** The job whose open orders are shown, or -1 for the list. */
     private int detailJobId = -1;
@@ -241,6 +265,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         TAB_BUTTON_3_DETAIL.add(addButton(new SmallGuiButton(12, guiLeft + 10, guiTop + 205, 30, 10, "Back")));
         detailCancelButton = addButton(new SmallGuiButton(13, guiLeft + 45, guiTop + 205, 60, 10, "Cancel"));
         TAB_BUTTON_3_DETAIL.add(detailCancelButton);
+        groupBackButton = addButton(new SmallGuiButton(14, guiLeft + 10, guiTop + 205, 30, 10, "Back"));
         for (int i = 0; i < JOB_ROWS; i++) {
             jobCancelButtons[i] = addButton(
                     new SmallGuiButton(20 + i, guiLeft + xSize - 22, guiTop + 45 + i * JOB_ROW_HEIGHT, 10, 10, "x"));
@@ -300,6 +325,8 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                     new int[] { 1, 10, 64, 64 },
                     true);
             itemDisplay_2.setItemList(new ArrayList<>());
+            // Smart Crafters' fluid orders are listed as fluid containers sized in litres, among the item crafts.
+            itemDisplay_2.setMixedFluids(true);
         }
         // A multiple of 20 too: ItemDisplay sizes a page as width * height / 400, so 125 put a few items on a 7th row
         // below the box.
@@ -372,11 +399,13 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             if (row != null && row.ended == null) {
                 confirmCancel(row.info);
             }
+        } else if (p_146284_1_.id == 14) {
+            closeGroup();
         } else if (p_146284_1_.id >= 20 && p_146284_1_.id < 20 + JOB_ROWS) {
-            List<JobRow> rows = sortedRows();
+            List<ListEntry> entries = listEntries();
             int index = jobPage * JOB_ROWS + (p_146284_1_.id - 20);
-            if (index < rows.size() && rows.get(index).ended == null) {
-                confirmCancel(rows.get(index).info);
+            if (index < entries.size() && !entries.get(index).isGroup() && entries.get(index).first().ended == null) {
+                confirmCancel(entries.get(index).first().info);
             }
         } else if (p_146284_1_.id == 30) {
             freeOnly = !freeOnly;
@@ -788,6 +817,68 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         return liveRows;
     }
 
+    /**
+     * What the list shows, in the chosen order. The full list puts the live requests of a group in one line, where its
+     * first request in that order would be; ended requests stay a line each. An open group lists its own requests,
+     * ended ones included.
+     */
+    private List<ListEntry> listEntries() {
+        List<ListEntry> entries = new ArrayList<>();
+        Map<List<Object>, ListEntry> groups = new HashMap<>();
+        for (JobRow row : sortedRows()) {
+            List<Object> key = groupKeyOf(row);
+            if (openGroup != null) {
+                if (openGroup.equals(key)) {
+                    entries.add(entryOf(row));
+                }
+                continue;
+            }
+            if (key == null || row.ended != null) {
+                entries.add(entryOf(row));
+                continue;
+            }
+            ListEntry group = groups.get(key);
+            if (group == null) {
+                group = new ListEntry();
+                groups.put(key, group);
+                entries.add(group);
+            }
+            group.rows.add(row);
+        }
+        return entries;
+    }
+
+    private static ListEntry entryOf(JobRow row) {
+        ListEntry entry = new ListEntry();
+        entry.rows.add(row);
+        return entry;
+    }
+
+    /**
+     * Requests that are grouped: the same single item asked for by the same pipe. Null for a list request or one with
+     * no item or requester, which are never grouped.
+     */
+    private static List<Object> groupKeyOf(JobRow row) {
+        CraftingJobInfo info = row.info;
+        ItemIdentifierStack main = info.getMainItem();
+        if (main == null || info.getRequested().size() != 1 || info.getRequesterPosition() == null) {
+            return null;
+        }
+        return Arrays.asList(main.getItem(), where(info.getRequesterPosition()));
+    }
+
+    private void openGroup(ListEntry group) {
+        openGroup = groupKeyOf(group.first());
+        openGroupTitle = jobName(group.first().info) + " from " + where(group.first().info.getRequesterPosition());
+        pageBeforeGroup = jobPage;
+        jobPage = 0;
+    }
+
+    private void closeGroup() {
+        openGroup = null;
+        jobPage = pageBeforeGroup;
+    }
+
     private void showJobList() {
         detailJobId = -1;
         detail = new ArrayList<>();
@@ -802,7 +893,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     }
 
     private void turnJobPage(int by) {
-        int size = detailJobId == -1 ? sortedRows().size() : detail.size();
+        int size = detailJobId == -1 ? listEntries().size() : detail.size();
         int perPage = detailJobId == -1 ? JOB_ROWS : WAIT_ROWS;
         int pages = Math.max(1, (size + perPage - 1) / perPage);
         if (detailJobId == -1) {
@@ -930,27 +1021,88 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                 statusColor);
     }
 
+    /**
+     * A group of requests as one line: how many there are, who asked, the oldest of them and the longest any has gone
+     * without progress (red past the stall time, like a single request, so a stuck one still shows), and sent and
+     * crafted added up.
+     */
+    private void drawGroupRow(ListEntry group, int x, int y, boolean hovered) {
+        if (hovered) {
+            drawRect(x, y, x + rowWidth(), y + JOB_ROW_HEIGHT - 1, Color.LIGHTER_GREY);
+        }
+        CraftingJobInfo first = group.first().info;
+        renderItem(first.getMainItem(), x + 1, y + 2);
+        long oldest = 0;
+        long mostIdle = 0;
+        long sent = 0;
+        long total = 0;
+        long craftedDone = 0;
+        long craftedRequired = 0;
+        boolean shortAny = false;
+        for (JobRow row : group.rows) {
+            CraftingJobInfo info = row.info;
+            oldest = Math.max(oldest, info.getQueuedTicksAgo());
+            mostIdle = Math.max(mostIdle, info.getIdleTicks());
+            sent += info.getSent();
+            total += info.getTotal();
+            craftedDone += info.getCraftedDone();
+            craftedRequired += info.getCraftedRequired();
+            shortAny |= info.isReplanShort();
+        }
+        int textColor = 0x404040;
+        int nameWidth = rowWidth() - 22;
+        if (craftedRequired > 0) {
+            String crafted = craftedDone + "/" + craftedRequired + " crafted";
+            int craftedWidth = fontRendererObj.getStringWidth(crafted);
+            fontRendererObj.drawString(crafted, x + rowWidth() - 2 - craftedWidth, y + 1, textColor);
+            nameWidth -= craftedWidth + 6;
+        }
+        String name = group.rows.size() + "x " + jobName(first) + " from " + where(first.getRequesterPosition());
+        fontRendererObj
+                .drawString(StringUtils.getWithMaxWidth(name, nameWidth, fontRendererObj), x + 20, y + 1, textColor);
+        String status = "oldest " + age(oldest) + " | most idle " + age(mostIdle) + " | " + sent + "/" + total;
+        if (shortAny) {
+            status = "SHORT | " + status;
+        }
+        int statusColor = shortAny || mostIdle >= STALLED_TICKS ? 0xAA0000 : textColor;
+        fontRendererObj.drawString(
+                StringUtils.getWithMaxWidth(status, rowWidth() - 22, fontRendererObj),
+                x + 20,
+                y + 10,
+                statusColor);
+    }
+
     private void drawJobsTab(int mouseX, int mouseY) {
         int x = guiLeft + 10;
         int top = guiTop + 40;
         if (detailJobId == -1) {
-            List<JobRow> rows = sortedRows();
-            if (rows.isEmpty()) {
+            List<ListEntry> entries = listEntries();
+            if (entries.isEmpty() && openGroup != null) {
+                // Every request of the group has gone: back to the full list.
+                closeGroup();
+                entries = listEntries();
+            }
+            if (entries.isEmpty()) {
                 String empty = "No crafting requests on this network.";
                 fontRendererObj
                         .drawString(empty, xCenter - fontRendererObj.getStringWidth(empty) / 2, top + 20, 0x404040);
                 return;
             }
-            int pages = Math.max(1, (rows.size() + JOB_ROWS - 1) / JOB_ROWS);
+            int pages = Math.max(1, (entries.size() + JOB_ROWS - 1) / JOB_ROWS);
             jobPage = Math.min(jobPage, pages - 1);
             for (int i = 0; i < JOB_ROWS; i++) {
                 int index = jobPage * JOB_ROWS + i;
-                if (index >= rows.size()) {
+                if (index >= entries.size()) {
                     break;
                 }
                 int y = top + i * JOB_ROW_HEIGHT;
                 boolean hovered = mouseX >= x && mouseX < x + rowWidth() && mouseY >= y && mouseY < y + JOB_ROW_HEIGHT;
-                drawJobRow(rows.get(index), x, y, hovered && !hasSubGui());
+                ListEntry entry = entries.get(index);
+                if (entry.isGroup()) {
+                    drawGroupRow(entry, x, y, hovered && !hasSubGui());
+                } else {
+                    drawJobRow(entry.first(), x, y, hovered && !hasSubGui());
+                }
             }
             drawPageNumber(jobPage, pages);
             return;
@@ -1306,9 +1458,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             } else if (current_Tab == 1) {
                 itemDisplay_2.handleClick(par1, par2, par3);
             } else if (current_Tab == JOBS_TAB && par3 == 0 && detailJobId == -1) {
-                int row = jobRowAt(par1, par2);
-                if (row >= 0) {
-                    showJobDetail(sortedRows().get(row).info.getId());
+                int index = jobRowAt(par1, par2);
+                if (index >= 0) {
+                    ListEntry entry = listEntries().get(index);
+                    if (entry.isGroup()) {
+                        openGroup(entry);
+                    } else {
+                        showJobDetail(entry.first().info.getId());
+                    }
                 }
             } else if (current_Tab == JOBS_TAB && par3 == 0 && isOverDetailHeader(par1, par2)) {
                 // Clicking the request again collapses it, the same as Back.
@@ -1324,7 +1481,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         }
     }
 
-    /** The index into {@link #sortedRows()} of the job row under the mouse, or -1. Excludes the cancel buttons. */
+    /** The index into {@link #listEntries()} of the line under the mouse, or -1. Excludes the cancel buttons. */
     private int jobRowAt(int mouseX, int mouseY) {
         int x = guiLeft + 10;
         int top = guiTop + 40;
@@ -1332,7 +1489,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             return -1;
         }
         int index = jobPage * JOB_ROWS + (mouseY - top) / JOB_ROW_HEIGHT;
-        return index < sortedRows().size() ? index : -1;
+        return index < listEntries().size() ? index : -1;
     }
 
     @Override
@@ -1354,8 +1511,10 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                     false);
             GuiGraphics.displayItemToolTip(itemDisplay_2.getToolTip(), this, zLevel, guiLeft, guiTop);
         } else if (current_Tab == JOBS_TAB) {
-            String title = detailJobId == -1 ? StringUtils.translate(PREFIX + "jobs")
-                    : "Request #" + detailJobId + " is waiting on:";
+            String title = detailJobId != -1 ? "Request #" + detailJobId + " is waiting on:"
+                    : openGroup != null ? openGroupTitle : StringUtils.translate(PREFIX + "jobs");
+            // Room left of the sort button.
+            title = StringUtils.getWithMaxWidth(title, xSize - 90, mc.fontRenderer);
             mc.fontRenderer.drawString(title, 10, 28, Color.getValue(Color.DARKER_GREY), false);
         } else if (current_Tab == CRAFTERS_TAB) {
             mc.fontRenderer.drawString(
@@ -1402,13 +1561,16 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         for (GuiButton button : TAB_BUTTON_3_PAGES) {
             button.visible = jobsTab;
         }
+        groupBackButton.visible = listView && openGroup != null;
         JobRow detailRow = findRow(detailJobId);
         detailCancelButton.enabled = detailRow != null && detailRow.ended == null;
-        List<JobRow> rows = listView ? sortedRows() : null;
+        List<ListEntry> entries = listView ? listEntries() : null;
         for (int i = 0; i < JOB_ROWS; i++) {
             int index = jobPage * JOB_ROWS + i;
-            // Only live jobs can be cancelled; ended rows stay listed without a button.
-            jobCancelButtons[i].visible = listView && index < rows.size() && rows.get(index).ended == null;
+            // Only live single requests can be cancelled; ended rows and groups stay listed without a button.
+            jobCancelButtons[i].visible = listView && index < entries.size()
+                    && !entries.get(index).isGroup()
+                    && entries.get(index).first().ended == null;
         }
     }
 
