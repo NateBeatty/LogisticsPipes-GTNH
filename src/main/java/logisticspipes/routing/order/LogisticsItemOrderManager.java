@@ -57,6 +57,27 @@ public class LogisticsItemOrderManager extends LogisticsOrderManager<LogisticsIt
         super.sendFailed();
     }
 
+    /**
+     * Same kind of order (extras never: they go nowhere), same item, to the same destination and target there, made by
+     * the same recipe. Two such orders differ only in which request they belong to.
+     */
+    @Override
+    protected boolean interchangeable(LogisticsItemOrder a, LogisticsItemOrder b) {
+        if (a.getType() != b.getType() || a.getType() == ResourceType.EXTRA
+                || a.getDestination() == null
+                || a.getDestination() != b.getDestination()
+                || a.getMaker() != b.getMaker()) {
+            return false;
+        }
+        if (!a.getResource().getIdentifier().equals(b.getResource().getIdentifier())
+                || !a.getResource().getItem().equals(b.getResource().getItem())) {
+            return false;
+        }
+        IAdditionalTargetInformation infoA = a.getInformation();
+        IAdditionalTargetInformation infoB = b.getInformation();
+        return infoA == null ? infoB == null : infoA.sameTargetAs(infoB);
+    }
+
     public LogisticsItemOrder addOrder(ItemIdentifierStack stack, IRequestItems requester, ResourceType type,
             IAdditionalTargetInformation info) {
         LogisticsItemOrder order = new LogisticsItemOrder(new DictResource(stack, null), requester, type, info);

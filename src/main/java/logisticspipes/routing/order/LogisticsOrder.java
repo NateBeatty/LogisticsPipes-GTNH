@@ -19,6 +19,11 @@ import lombok.experimental.Accessors;
 public abstract class LogisticsOrder implements IOrderInfoProvider {
 
     private static final int MIN_DISTANCE_TO_DISPLAY = 4;
+    private static long nextSequence = 0;
+
+    /** Creation order, server-wide. A queue rotates, so an order's place in it says nothing about its age. */
+    @Getter
+    private final long sequence = nextSequence++;
 
     @Getter
     private final IAdditionalTargetInformation information;

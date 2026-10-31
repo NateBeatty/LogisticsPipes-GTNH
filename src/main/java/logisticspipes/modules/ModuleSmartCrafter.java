@@ -443,6 +443,11 @@ public class ModuleSmartCrafter extends ModuleCrafter
         public ModuleSmartCrafter getCrafter() {
             return crafter.get();
         }
+
+        @Override
+        public boolean sameTargetAs(IAdditionalTargetInformation other) {
+            return super.sameTargetAs(other) && ((SmartSlotInformation) other).getCrafter() == getCrafter();
+        }
     }
 
     /** The crafter an ingredient's target information names, or null if it names none. */

@@ -2101,5 +2101,10 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             super(moduleSlot);
             this.craftingSlot = craftingSlot;
         }
+
+        @Override
+        public boolean sameTargetAs(IAdditionalTargetInformation other) {
+            return super.sameTargetAs(other) && ((CraftingChassieInformation) other).craftingSlot == craftingSlot;
+        }
     }
 }

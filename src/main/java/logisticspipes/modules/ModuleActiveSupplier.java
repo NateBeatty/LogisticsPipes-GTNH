@@ -641,6 +641,12 @@ public class ModuleActiveSupplier extends LogisticsGuiModule
         }
 
         @Override
+        public boolean sameTargetAs(IAdditionalTargetInformation other) {
+            return super.sameTargetAs(other) && ((PatternSupplierTargetInformation) other).targetSlot == targetSlot
+                    && ((PatternSupplierTargetInformation) other).amount == amount;
+        }
+
+        @Override
         public boolean isLimited() {
             return ModuleActiveSupplier.this.isLimited();
         }

@@ -4,6 +4,7 @@
  */
 package logisticspipes.routing.order;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -109,20 +110,38 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
         return top;
     }
 
+    /**
+     * The top order sent {@code number} items. They are counted against the oldest orders that are interchangeable with
+     * it first (see {@link #interchangeable}), and only what is left against the top order itself. The items go where
+     * they were going either way; this only decides which request they finish. Otherwise a crafter whose queue rotates
+     * hands out its results round-robin, and with hundreds of orders for the same ingredient every job ends up waiting
+     * on its last few items for hours.
+     */
     @SuppressWarnings("unchecked")
     public void sendSuccessfull(int number, boolean defersend, IRoutedItem item) {
-        CraftingJobs.orderProgressed(_orders.getFirst(), number);
-        _orders.getFirst().reduceAmountBy(number);
-        if (item != null && item.getInfo() != null) {
-            item.getInfo().job = _orders.getFirst().getJob();
+        T top = _orders.getFirst();
+        int destination = top.getRouterId();
+        int left = number;
+        boolean tagged = false;
+        for (T older : olderInterchangeable(top)) {
+            if (left <= 0) {
+                break;
+            }
+            int portion = Math.min(left, older.getAmount());
+            credit(older, portion, item, !tagged);
+            tagged = true;
+            left -= portion;
+            if (older.getAmount() <= 0) {
+                _orders.remove(older);
+                older.setFinished(true);
+                older.setInProgress(false);
+                CraftingJobs.orderFinished(older);
+            }
         }
-        if (_orders.getFirst().isWatched() && item != null) {
-            IDistanceTracker tracker = new DistanceTracker();
-            item.setDistanceTracker(tracker);
-            _orders.getFirst().addDistanceTracker(tracker);
+        if (left > 0 || !tagged) {
+            credit(top, left, item, !tagged);
         }
-        int destination = _orders.getFirst().getRouterId();
-        if (_orders.getFirst().getAmount() <= 0) {
+        if (top.getAmount() <= 0) {
             LogisticsOrder order = _orders.removeFirst();
             order.setFinished(true);
             order.setInProgress(false);
@@ -142,6 +161,63 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
             }
         }
         listen();
+    }
+
+    /**
+     * Counts sent items against one order. The routed item joins the job, and carries the distance tracker, of the
+     * first order it is counted against: an item has room for one of each.
+     */
+    private void credit(T order, int amount, IRoutedItem item, boolean first) {
+        CraftingJobs.orderProgressed(order, amount);
+        order.reduceAmountBy(amount);
+        if (!first || item == null) {
+            return;
+        }
+        if (item.getInfo() != null) {
+            item.getInfo().job = order.getJob();
+        }
+        if (order.isWatched()) {
+            IDistanceTracker tracker = new DistanceTracker();
+            item.setDistanceTracker(tracker);
+            order.addDistanceTracker(tracker);
+        }
+    }
+
+    /** Open orders interchangeable with {@code top} that are older than it, oldest first. */
+    private List<T> olderInterchangeable(T top) {
+        List<T> older = new ArrayList<>();
+        for (T order : _orders) {
+            if (order != top && !order.isFinished()
+                    && order.getAmount() > 0
+                    && isOlder(order, top)
+                    && interchangeable(top, order)) {
+                older.add(order);
+            }
+        }
+        older.sort(LogisticsOrderManager::compareAge);
+        return older;
+    }
+
+    /** By job first, so the oldest request finishes first, then by when the order itself was made. */
+    private static int compareAge(LogisticsOrder a, LogisticsOrder b) {
+        int byJob = Integer.compare(jobAge(a), jobAge(b));
+        return byJob != 0 ? byJob : Long.compare(a.getSequence(), b.getSequence());
+    }
+
+    private static boolean isOlder(LogisticsOrder a, LogisticsOrder b) {
+        return compareAge(a, b) < 0;
+    }
+
+    private static int jobAge(LogisticsOrder order) {
+        return order.getJob() == null ? Integer.MAX_VALUE : order.getJob().getId();
+    }
+
+    /**
+     * Whether an item sent for order {@code a} could just as well have been sent for {@code b}: same item, same
+     * destination, same target there, same kind of order. None by default.
+     */
+    protected boolean interchangeable(T a, T b) {
+        return false;
     }
 
     public void sendFailed() {

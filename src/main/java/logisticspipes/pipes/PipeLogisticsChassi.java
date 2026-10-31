@@ -915,5 +915,11 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         public ChassiTargetInformation(int slot) {
             moduleSlot = slot;
         }
+
+        @Override
+        public boolean sameTargetAs(IAdditionalTargetInformation other) {
+            return other == this || other != null && other.getClass() == getClass()
+                    && ((ChassiTargetInformation) other).moduleSlot == moduleSlot;
+        }
     }
 }
