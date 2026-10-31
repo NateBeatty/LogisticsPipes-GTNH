@@ -14,6 +14,7 @@ import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.IFluidHandler;
 
 import logisticspipes.LogisticsPipes;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IGatedItemSink;
 import logisticspipes.interfaces.routing.IRequestFluid;
@@ -320,6 +321,12 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         }
     }
 
+    /** An order for this satellite that never left its provider: lost to the crafter, but nothing was on its way. */
+    @Override
+    public void itemCouldNotBeSend(ItemIdentifierStack item, IAdditionalTargetInformation info) {
+        ModuleSmartCrafter.whileReportingUnsent(() -> super.itemCouldNotBeSend(item, info));
+    }
+
     /* -- Fluid arrival / not-inserted: a container carries no word of its crafter, so the crafters sort it out -- */
 
     /**
@@ -341,7 +348,22 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     @Override
     public void sendFailed(FluidIdentifier fluid, Integer amount) {
-        liquidLost(fluid, amount);
+        fluidSendFailed(fluid, amount, null);
+    }
+
+    /**
+     * A provider couldn't send an order for this satellite: its tanks were empty. Unlike a container lost on the way,
+     * nothing of it was counted as on its way, so there is nothing to refund; the crafter the order was for asks for
+     * it again instead, or its set waits for good.
+     */
+    public void fluidSendFailed(FluidIdentifier fluid, Integer amount, IAdditionalTargetInformation info) {
+        ModuleSmartCrafter c = ModuleSmartCrafter.crafterOf(info);
+        if (c == null) {
+            c = crafterWantingFluid(fluid);
+        }
+        if (c != null) {
+            c.fluidSendFailedAt(this, fluid, amount == null ? 0 : amount);
+        }
     }
 
     /* -- Gating: delegate to the per-slot allowance of the crafter the delivery is for -- */
@@ -391,6 +413,37 @@ public class PipeSmartSatellite extends FluidRoutedPipe
             return false;
         }
         getCacheHolder().trigger(CacheTypes.Inventory);
+        FluidIdentifier fluid = FluidIdentifier.get(liquid);
+        // Only what a crafter bound here is waiting for goes in (see ModuleSmartCrafter.fluidExpectedAtSatellite). The
+        // rest is sent on to storage without a refund, since no slot was waiting for it.
+        int expected = ModuleSmartCrafter.fluidExpectedAtSatellite(this, fluid);
+        if (liquid.amount > expected) {
+            FluidStack unexpected = liquid.copy();
+            unexpected.amount = liquid.amount - expected;
+            if (Configs.DEBUG_ITEM_GATE) {
+                LogisticsPipes.log.info(
+                        "[ItemGate DIAG] sat " + satelliteId
+                                + " at "
+                                + getX()
+                                + ","
+                                + getY()
+                                + ","
+                                + getZ()
+                                + " FLUID DECLINED "
+                                + unexpected.amount
+                                + "mB "
+                                + fluid
+                                + " (expected "
+                                + expected
+                                + "mB)");
+            }
+            sendOnToStorage(unexpected, arrivingItem.output);
+            if (expected <= 0) {
+                return true;
+            }
+            liquid = liquid.copy();
+            liquid.amount = expected;
+        }
         int arrived = liquid.amount;
         // Only the machine this satellite faces may take the fluid. No side/internal overflow tanks.
         if (isConnectableTank(tile, arrivingItem.output, false) && (tile instanceof IFluidHandler handler)) {
@@ -399,21 +452,26 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         // Counted as delivered only now, and only what went in. Counting the whole container on arrival took the
         // turned-away part off the crafter's in-flight count too, so when it was the last fluid on its way the refund
         // below found nothing in flight and was dropped: the crafter thought the fluid was in the machine for good.
-        ModuleSmartCrafter.fluidArrivedAtSatellite(this, FluidIdentifier.get(liquid), arrived - liquid.amount);
+        ModuleSmartCrafter.fluidArrivedAtSatellite(this, fluid, arrived - liquid.amount);
         if (liquid.amount == 0) {
             return true;
         }
         // The machine tank is full: report it so the owning crafter refunds the slot, then re-queue the leftover to a
         // sink that has room so the fluid is not voided.
-        liquidNotInserted(FluidIdentifier.get(liquid), liquid.amount);
+        liquidNotInserted(fluid, liquid.amount);
+        sendOnToStorage(liquid, arrivingItem.output);
+        return true;
+    }
+
+    /** Re-queues fluid this satellite won't pour into its machine to a fluid sink that has room, so it isn't voided. */
+    private void sendOnToStorage(FluidStack liquid, ForgeDirection machineSide) {
         IRoutedItem routedItem = SimpleServiceLocator.routedItemHelper
                 .createNewTravelItem(SimpleServiceLocator.logisticsFluidManager.getFluidContainer(liquid));
         Pair<Integer, Integer> replies = SimpleServiceLocator.logisticsFluidManager
                 .getBestReply(liquid, getRouter(), routedItem.getJamList());
         routedItem.setDestination(replies.getValue1());
         routedItem.setTransportMode(TransportMode.Passive);
-        this.queueRoutedItem(routedItem, arrivingItem.output.getOpposite());
-        return true;
+        this.queueRoutedItem(routedItem, machineSide.getOpposite());
     }
 
     /* -- Machine access (used by the owning crafter for room checks, claims, and outputs) -- */

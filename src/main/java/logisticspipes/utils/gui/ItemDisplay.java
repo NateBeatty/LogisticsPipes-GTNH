@@ -24,6 +24,7 @@ import org.lwjgl.opengl.GL12;
 import cpw.mods.fml.client.FMLClientHandler;
 import logisticspipes.config.Configs;
 import logisticspipes.interfaces.ISpecialItemRenderer;
+import logisticspipes.items.LogisticsFluidContainer;
 import logisticspipes.utils.Color;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -74,6 +75,12 @@ public class ItemDisplay {
     /** The list holds fluids, as LP fluid containers sized in litres, so amounts are labelled as litres. */
     @Setter
     private boolean fluids = false;
+    /**
+     * The list mixes items and fluids, so each LP fluid container in it is labelled in litres and everything else as
+     * usual. Not for a list whose fluid stacks aren't sized in litres.
+     */
+    @Setter
+    private boolean mixedFluids = false;
 
     public ItemDisplay(IItemSearch search, FontRenderer fontRenderer, LogisticsBaseGuiScreen screen,
             ISpecialItemRenderer renderer, int left, int top, int width, int height, int[] amountChangeMode,
@@ -367,8 +374,9 @@ public class ItemDisplay {
 
                 // use GuiGraphics to render the ItemStacks
                 ItemStackRenderer itemstackRenderer = new ItemStackRenderer(x, y, 100.0F, true, false, true);
+                boolean litres = fluids || (mixedFluids && item.item instanceof LogisticsFluidContainer);
                 itemstackRenderer.setItemIdentifierStack(itemIdentifierStack)
-                        .setDisplayAmount(fluids ? DisplayAmount.LITRES : DisplayAmount.HIDE_ONE);
+                        .setDisplayAmount(litres ? DisplayAmount.LITRES : DisplayAmount.HIDE_ONE);
                 itemstackRenderer.renderInGui();
 
                 x += panelxSize;

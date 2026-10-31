@@ -14,6 +14,7 @@ import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fluids.FluidTankInfo;
 import net.minecraftforge.fluids.IFluidHandler;
 
+import logisticspipes.LogisticsPipes;
 import logisticspipes.config.Configs;
 import logisticspipes.interfaces.ISpecialTankAccessHandler;
 import logisticspipes.interfaces.ISpecialTankHandler;
@@ -71,7 +72,7 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
             if (allowed <= 0) {
                 // Room for any of it is enough: the rest follows on later passes, the same as a gate that only lets
                 // part through. Waiting for room for the whole chunk could wait for ever on a small buffer.
-                toBuffer = ModuleFluidCraftingBuffer.withRoomFor(order.getFluid(), 1, order.getRouter());
+                toBuffer = ModuleFluidCraftingBuffer.chooseFor(order.getFluid(), 1, order.getRouter());
                 if (toBuffer == null) {
                     getFluidOrderManager().deferSend();
                     return;
@@ -173,8 +174,119 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         // Nothing could be drained: the tanks don't hold the fluid any more. Not the same as being gated, which never
         // gets this far.
         if (sent <= 0) {
+            // TEMP [FluidOrder DIAG]
+            fluidOrderDiag(
+                    "SEND FAILED " + order.getAmount()
+                            + "mB "
+                            + order.getFluid()
+                            + " (tried "
+                            + amountToSend
+                            + "mB"
+                            + (toBuffer != null
+                                    ? " to buffer " + toBuffer.getX() + "," + toBuffer.getY() + "," + toBuffer.getZ()
+                                    : "")
+                            + ")",
+                    order.getFluid(),
+                    order.getDestination(),
+                    order.getInformation());
             getFluidOrderManager().sendFailed();
         }
+    }
+
+    /*
+     * [FluidOrder DIAG], with the fluidOrder debug config: every fluid order this provider takes and every send that
+     * finds its tanks empty, with what the tanks hold and what is already promised. For tracing a Smart Crafter left
+     * short of a fluid ingredient.
+     */
+
+    private void fluidOrderDiag(String event, FluidIdentifier fluid, IRequestFluid destination,
+            IAdditionalTargetInformation info) {
+        if (!Configs.DEBUG_FLUID_ORDER) {
+            return;
+        }
+        Integer free = getAvailableFluids().get(fluid);
+        LogisticsPipes.log.info(
+                "[FluidOrder DIAG] provider " + getX()
+                        + ","
+                        + getY()
+                        + ","
+                        + getZ()
+                        + " "
+                        + event
+                        + " | tanks hold "
+                        + diagTankAmount(fluid)
+                        + "mB, queued "
+                        + getFluidOrderManager().totalFluidsCountInOrders(fluid)
+                        + "mB, free "
+                        + (free == null ? 0 : free)
+                        + "mB | to "
+                        + diagDestination(destination)
+                        + " | for "
+                        + diagInfo(info));
+    }
+
+    /** What the adjacent tanks hold of a fluid, before anything promised is taken off. */
+    private int diagTankAmount(FluidIdentifier fluid) {
+        long total = 0;
+        for (Pair<TileEntity, ForgeDirection> pair : getAdjacentTanks(false)) {
+            if (SimpleServiceLocator.specialTankHandler.hasHandlerFor(pair.getValue1())) {
+                ISpecialTankHandler handler = SimpleServiceLocator.specialTankHandler
+                        .getTankHandlerFor(pair.getValue1());
+                if (handler instanceof ISpecialTankAccessHandler) {
+                    Long amount = ((ISpecialTankAccessHandler) handler).getAvailableLiquid(pair.getValue1()).get(fluid);
+                    total += amount == null ? 0 : amount;
+                    continue;
+                }
+            }
+            FluidTankInfo[] tanks = ((IFluidHandler) pair.getValue1()).getTankInfo(pair.getValue2().getOpposite());
+            if (tanks == null) {
+                continue;
+            }
+            for (FluidTankInfo tank : tanks) {
+                if (tank != null && tank.fluid != null && fluid.equals(FluidIdentifier.get(tank.fluid))) {
+                    total += tank.fluid.amount;
+                }
+            }
+        }
+        return (int) Math.min(Integer.MAX_VALUE, total);
+    }
+
+    private static String diagDestination(IRequestFluid destination) {
+        if (destination instanceof PipeSmartSatellite) {
+            PipeSmartSatellite sat = (PipeSmartSatellite) destination;
+            return "Smart Satellite " + sat.satelliteId + " at " + sat.getX() + "," + sat.getY() + "," + sat.getZ();
+        }
+        if (destination instanceof ModuleSmartCrafter) {
+            ModuleSmartCrafter crafter = (ModuleSmartCrafter) destination;
+            return "Smart Crafter " + crafter.getX()
+                    + ","
+                    + crafter.getY()
+                    + ","
+                    + crafter.getZ()
+                    + " m"
+                    + crafter.getPositionInt();
+        }
+        if (destination == null) {
+            return "nothing";
+        }
+        return destination.getClass().getSimpleName() + " router "
+                + (destination.getRouter() == null ? -1 : destination.getRouter().getSimpleID());
+    }
+
+    private static String diagInfo(IAdditionalTargetInformation info) {
+        ModuleSmartCrafter crafter = ModuleSmartCrafter.crafterOf(info);
+        if (crafter == null) {
+            return info == null ? "no slot info" : info.getClass().getSimpleName();
+        }
+        return "Smart Crafter " + crafter.getX()
+                + ","
+                + crafter.getY()
+                + ","
+                + crafter.getZ()
+                + " m"
+                + crafter.getPositionInt()
+                + " slot "
+                + ((ModuleSmartCrafter.SmartSlotInformation) info).getCraftingSlot();
     }
 
     /**
@@ -327,9 +439,12 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
             }
         }
 
+        // What earlier requests still have queued here is spoken for too, as getAvailableFluids already counts it.
+        // Promised again, two requests share one tank's worth and the later orders find it empty when they send.
         int promiseAmount = Math.min(
                 tree.getMissingAmount(),
-                containedAmount - root.getAllPromissesFor(this, fluid.getItemIdentifier()));
+                containedAmount - getFluidOrderManager().totalFluidsCountInOrders(fluid)
+                        - root.getAllPromissesFor(this, fluid.getItemIdentifier()));
 
         FluidLogisticsPromise promise = new FluidLogisticsPromise(fluid, promiseAmount, this, ResourceType.PROVIDER);
 
@@ -341,6 +456,12 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
     @Override
     public IOrderInfoProvider fullFill(FluidLogisticsPromise promise, IRequestFluid destination, ResourceType type,
             IAdditionalTargetInformation info) {
+        // TEMP [FluidOrder DIAG]: logged before the order is added, so "queued" is what was promised before it
+        fluidOrderDiag(
+                "ORDER " + promise.getAmount() + "mB " + promise.getLiquid(),
+                promise.getLiquid(),
+                destination,
+                info);
         return getFluidOrderManager().addOrder(promise, destination, type, info);
     }
 

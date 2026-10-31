@@ -15,6 +15,7 @@ import net.minecraft.util.IIcon;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import logisticspipes.LogisticsPipes;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.request.RequestLog;
@@ -218,7 +219,10 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
 
             @Override
             public void handleMissingItems(List<IResource> resources) {
-                // TEMP [Trickle DIAG]: what a failed request was missing.
+                // [Trickle DIAG]: what a failed request was missing.
+                if (!Configs.DEBUG_TRICKLE) {
+                    return;
+                }
                 StringBuilder missing = new StringBuilder();
                 for (IResource resource : resources) {
                     ItemIdentifierStack display = resource.getDisplayItem();
@@ -250,14 +254,17 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
         }
     }
 
-    /** TEMP [Trickle DIAG] rate limit, per item. */
+    /** [Trickle DIAG] rate limit, per item. */
     private final Map<ItemIdentifier, Long> lastSkipDiag = new HashMap<>();
 
     /**
-     * TEMP [Trickle DIAG]: why an item isn't requested because one is thought to be on its way. At most once a minute
-     * per item. Remove once the "never requests again" stall is found.
+     * [Trickle DIAG], with the trickleSupplier debug config: why an item isn't requested because one is thought to be on
+     * its way. At most once a minute per item.
      */
     private void logSkipDiag(ItemIdentifier item) {
+        if (!Configs.DEBUG_TRICKLE) {
+            return;
+        }
         long now = _world.getWorld().getTotalWorldTime();
         Long last = lastSkipDiag.get(item);
         if (last != null && now - last < 20 * 60) {
@@ -308,7 +315,7 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
         LogisticsPipes.log.info(line.toString());
     }
 
-    /** TEMP [Trickle DIAG]: where this module is, to tell suppliers apart in the log. */
+    /** [Trickle DIAG]: where this module is, to tell suppliers apart in the log. */
     private String where() {
         return "(" + getX() + ", " + getY() + ", " + getZ() + ")";
     }

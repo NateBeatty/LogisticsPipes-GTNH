@@ -27,6 +27,7 @@ import gnu.trove.map.TObjectIntMap;
 import gnu.trove.map.hash.TObjectIntHashMap;
 import logisticspipes.api.IMUICompatiblePipe;
 import logisticspipes.compat.ModularUIHelper;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IRequestCancelListener;
 import logisticspipes.interfaces.routing.IRequestFluid;
 import logisticspipes.interfaces.routing.IRequireReliableFluidTransport;
@@ -238,6 +239,20 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
 
     @Override
     public void throttledUpdateEntity() {
+        // [Cancel DIAG]
+        boolean diag = Configs.DEBUG_CANCEL && diagUpdates > 0;
+        if (diag) {
+            diagUpdates--;
+            log.info(
+                    "[Cancel DIAG] Fluid Supplier Mk2 {} update: enabled={} target={} {} threshold={} partials={} requested={}",
+                    getLPPosition(),
+                    isEnabled(),
+                    amount,
+                    phantomTank.getFluid() == null ? null : FluidIdentifier.get(phantomTank.getFluid()),
+                    refillThreshold,
+                    requestPartials,
+                    _requestedItems);
+        }
         if (!isEnabled()) {
             return;
         }
@@ -298,6 +313,14 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
             }
 
             setRequestFailed(false);
+            if (diag) {
+                log.info(
+                        "[Cancel DIAG]   side {} {}: still wanted {} (after subtracting on-the-way {})",
+                        tile.orientation,
+                        tile.tile.getClass().getSimpleName(),
+                        wantFluids,
+                        requestDiscount);
+            }
 
             // Make request
 
@@ -316,6 +339,9 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
                 }
 
                 if (!useEnergy(11)) {
+                    if (diag) {
+                        log.info("[Cancel DIAG]   no power to request {}", need);
+                    }
                     break;
                 }
 
@@ -330,6 +356,9 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
                     success = RequestTree.requestFluid(need, countToRequest, this, null);
                 }
 
+                if (diag) {
+                    log.info("[Cancel DIAG]   requested {} {}: success={}", countToRequest, need, success);
+                }
                 if (success) {
                     _requestedItems.adjustOrPutValue(need, countToRequest, countToRequest);
                 } else {
@@ -403,8 +432,24 @@ public class PipeFluidSupplierMk2 extends FluidRoutedPipe
 
     @Override
     public void fluidRequestCancelled(FluidIdentifier fluid, int amount) {
+        int before = _requestedItems.get(fluid);
         decreaseRequested(fluid, amount);
+        // [Cancel DIAG]
+        if (Configs.DEBUG_CANCEL) {
+            log.info(
+                    "[Cancel DIAG] Fluid Supplier Mk2 {} told {} {} cancelled: requested {} -> {} (all: {})",
+                    getLPPosition(),
+                    amount,
+                    fluid,
+                    before,
+                    _requestedItems.get(fluid),
+                    _requestedItems);
+            diagUpdates = 5;
+        }
     }
+
+    /** [Cancel DIAG]: how many more updates to explain after a cancel. */
+    private int diagUpdates = 0;
 
     @Override
     public void onWrenchClicked(EntityPlayer player) {
