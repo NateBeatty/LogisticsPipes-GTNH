@@ -11,6 +11,7 @@ import cpw.mods.fml.relauncher.SideOnly;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
+import logisticspipes.utils.SinkDiag;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.SinkReply.FixedPriority;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -37,21 +38,37 @@ public class ModulePolymorphicItemSink extends LogisticsModule {
     @Override
     public SinkReply sinksItem(ItemIdentifier item, int bestPriority, int bestCustomPriority, boolean allowDefault,
             boolean includeInTransit) {
+        boolean diag = SinkDiag.isActive();
         if (bestPriority > _sinkReply.fixedPriority.ordinal() || (bestPriority == _sinkReply.fixedPriority.ordinal()
                 && bestCustomPriority >= _sinkReply.customPriority)) {
+            if (diag) {
+                SinkDiag.log("  polymorphic refused: a nearer or better sink already won");
+            }
             return null;
         }
         IInventoryUtil targetInventory = _service.getSneakyInventory(false, slot, positionInt);
         if (targetInventory == null) {
+            if (diag) {
+                SinkDiag.log("  polymorphic refused: no inventory in front of it");
+            }
             return null;
         }
 
         if (!targetInventory.containsUndamagedItem(item.getUndamaged())) {
+            if (diag) {
+                SinkDiag.log(
+                        "  polymorphic refused: item not matched in " + targetInventory.getClass().getSimpleName()
+                                + ", "
+                                + SinkDiag.describeMatches(targetInventory, item));
+            }
             return null;
         }
 
         if (_service.canUseEnergy(3)) {
             return _sinkReply;
+        }
+        if (diag) {
+            SinkDiag.log("  polymorphic refused: not enough power");
         }
         return null;
     }

@@ -72,6 +72,7 @@ public class Configs {
     public static boolean DEBUG_SMART_CRAFTER_RECIPE = false;
     public static boolean DEBUG_FLUID_BUFFER = false;
     public static boolean DEBUG_REQUESTS = false;
+    public static boolean DEBUG_SINK_ROUTING = false;
 
     /** Milliseconds per tick a player's request may be planned for, spreading big ones over several ticks; 0 = off. */
     public static int REQUEST_SLICE_MS = 0;
@@ -361,6 +362,14 @@ public class Configs {
                         Configs.REQUEST_SLICE_MS,
                         "Milliseconds per server tick spent planning a request made from a request table or request pipe. A big request (thousands of crafts) is then worked out over several ticks instead of freezing the server until it is done; small ones still finish at once. Requests from suppliers, crafters and computers are not affected. 0 turns this off and plans every request at once, as before. Try 5.")
                         .getInt());
+
+        Configs.DEBUG_SINK_ROUTING = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "sinkRouting",
+                        Configs.DEBUG_SINK_ROUTING,
+                        "Log how an Extractor MK3 picks a destination, at most once a second per module: each candidate pipe, its reply or why it was skipped, and the winner. Also logs chassis that turn an item away on arrival. [SinkDiag] in the log.")
+                .getBoolean(false);
 
         Configs.CONFIGURATION.save();
     }

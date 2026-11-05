@@ -133,6 +133,10 @@ public class ModuleExtractor extends LogisticsSneakyDirectionModule
         nbttagcompound.setInteger("sneakydirection", _sneakyDirection.ordinal());
     }
 
+    protected Pair<Integer, SinkReply> findDestination(ItemIdentifier item, List<Integer> jamList) {
+        return _service.hasDestination(item, true, jamList);
+    }
+
     @Override
     public void tick() {
         if (++currentTick < ticksToAction()) {
@@ -160,7 +164,7 @@ public class ModuleExtractor extends LogisticsSneakyDirectionModule
             }
             ItemIdentifier slotitem = ItemIdentifier.get(slot);
             List<Integer> jamList = new LinkedList<>();
-            Pair<Integer, SinkReply> reply = _service.hasDestination(slotitem, true, jamList);
+            Pair<Integer, SinkReply> reply = findDestination(slotitem, jamList);
             if (reply == null) {
                 continue;
             }
@@ -197,7 +201,7 @@ public class ModuleExtractor extends LogisticsSneakyDirectionModule
                     break;
                 }
                 jamList.add(reply.getValue1());
-                reply = _service.hasDestination(ItemIdentifier.get(slot), true, jamList);
+                reply = findDestination(ItemIdentifier.get(slot), jamList);
             }
             break;
         }

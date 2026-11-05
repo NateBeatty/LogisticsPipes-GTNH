@@ -10,6 +10,7 @@ import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.utils.SinkDiag;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -92,6 +93,18 @@ public class ChassiTransportLayer extends TransportLayer {
         }
         SinkReply reply = module.sinksItem(item.getItemIdentifierStack().getItem(), -1, 0, true, false);
         if (reply == null || reply.maxNumberOfItems < 0) {
+            if (Configs.DEBUG_SINK_ROUTING) {
+                SinkDiag.log(
+                        "chassis at " + _chassiPipe.getX()
+                                + ","
+                                + _chassiPipe.getY()
+                                + ","
+                                + _chassiPipe.getZ()
+                                + " turned away on arrival: "
+                                + SinkDiag.describe(item.getItemIdentifierStack().getItem())
+                                + " x"
+                                + item.getItemIdentifierStack().getStackSize());
+            }
             _chassiPipe.notifyOfItemArival(item.getInfo());
             return false;
         }

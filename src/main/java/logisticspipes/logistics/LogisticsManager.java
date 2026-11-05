@@ -31,6 +31,7 @@ import logisticspipes.routing.ExitRoute;
 import logisticspipes.routing.IRouter;
 import logisticspipes.routing.PipeRoutingConnectionType;
 import logisticspipes.routing.ServerRouter;
+import logisticspipes.utils.SinkDiag;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.SinkReply.FixedPriority;
 import logisticspipes.utils.item.ItemIdentifier;
@@ -55,6 +56,9 @@ public class LogisticsManager implements ILogisticsManager {
             return null;
         }
         BitSet routersIndex = ServerRouter.getRoutersInterestedIn(stack);
+        if (SinkDiag.isActive()) {
+            SinkDiag.logPolymorphicChassis(stack, sourceRouter, routersIndex);
+        }
         List<ExitRoute> validDestinations = new ArrayList<>(); // get the routing table
         for (int i = routersIndex.nextSetBit(0); i >= 0; i = routersIndex.nextSetBit(i + 1)) {
             IRouter r = SimpleServiceLocator.routerManager.getRouterUnsafe(i, false);
@@ -127,22 +131,43 @@ public class LogisticsManager implements ILogisticsManager {
             result = new Triplet<>(null, null, null);
         }
 
+        boolean diag = SinkDiag.isActive();
         outer: for (ExitRoute candidateRouter : validDestinations) {
             if (excludeSource) {
                 if (candidateRouter.destination.getId().equals(sourceRouter.getId())) {
+                    if (diag) {
+                        SinkDiag.log(SinkDiag.where(candidateRouter.destination) + " skipped: it is the source");
+                    }
                     continue;
                 }
             }
             if (jamList.contains(candidateRouter.destination.getSimpleID())) {
+                if (diag) {
+                    SinkDiag.log(SinkDiag.where(candidateRouter.destination) + " skipped: on the jam list");
+                }
                 continue;
             }
 
             if (!candidateRouter.containsFlag(PipeRoutingConnectionType.canRouteTo)) {
+                if (diag) {
+                    SinkDiag.log(SinkDiag.where(candidateRouter.destination) + " skipped: route has no canRouteTo");
+                }
                 continue;
             }
 
             for (IFilter filter : candidateRouter.filters) {
                 if (filter.blockRouting() || (filter.isBlocked() == filter.isFilteredItem(stack))) {
+                    if (diag) {
+                        SinkDiag.log(
+                                SinkDiag.where(candidateRouter.destination) + " skipped: blocked by filter "
+                                        + filter.getClass().getSimpleName()
+                                        + " blockRouting="
+                                        + filter.blockRouting()
+                                        + " isBlocked="
+                                        + filter.isBlocked()
+                                        + " isFilteredItem="
+                                        + filter.isFilteredItem(stack));
+                    }
                     continue outer;
                 }
             }
@@ -156,6 +181,15 @@ public class LogisticsManager implements ILogisticsManager {
                     false,
                     allowDefault);
 
+            if (diag) {
+                SinkDiag.log(
+                        SinkDiag.where(candidateRouter.destination) + " distance="
+                                + candidateRouter.distanceToDestination
+                                + " reply: "
+                                + SinkDiag.describe(reply)
+                                + " | best so far: "
+                                + SinkDiag.describe(result.getValue2()));
+            }
             if (reply == null) {
                 continue;
             }
@@ -196,19 +230,32 @@ public class LogisticsManager implements ILogisticsManager {
             ItemIdentifier stack, SinkReply result, boolean activeRequest, boolean allowDefault) {
 
         SinkReply reply;
+        boolean diag = SinkDiag.isActive();
         LogisticsModule module = destination.getLogisticsModule();
         CoreRoutedPipe crp = destination.getPipe();
         if (module == null) {
+            if (diag) {
+                SinkDiag.log(SinkDiag.where(destination) + " refused: no module");
+            }
             return null;
         }
         if (!(module.recievePassive() || activeRequest)) {
+            if (diag) {
+                SinkDiag.log(SinkDiag.where(destination) + " refused: takes no passive items");
+            }
             return null;
         }
         if (crp == null || !crp.isEnabled()) {
+            if (diag) {
+                SinkDiag.log(SinkDiag.where(destination) + " refused: pipe missing or disabled");
+            }
             return null;
         }
         if (excludeSource && sourceRouter != null) {
             if (destination.getPipe().sharesInterestWith(sourceRouter.getPipe())) {
+                if (diag) {
+                    SinkDiag.log(SinkDiag.where(destination) + " refused: shares an inventory with the source");
+                }
                 return null;
             }
         }

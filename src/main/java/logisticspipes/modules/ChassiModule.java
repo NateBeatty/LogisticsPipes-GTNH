@@ -18,6 +18,7 @@ import logisticspipes.network.guis.pipe.ChassiGuiProvider;
 import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.PipeLogisticsChassi.ChassiTargetInformation;
 import logisticspipes.proxy.computers.objects.CCSinkResponder;
+import logisticspipes.utils.SinkDiag;
 import logisticspipes.utils.SinkReply;
 import logisticspipes.utils.item.ItemIdentifier;
 import logisticspipes.utils.item.ItemIdentifierStack;
@@ -58,6 +59,9 @@ public class ChassiModule extends LogisticsGuiModule {
             if (module != null) {
                 SinkReply result = module
                         .sinksItem(item, bestPriority, bestCustomPriority, allowDefault, includeInTransit);
+                if (SinkDiag.isActive()) {
+                    SinkDiag.log("  chassis module " + module.getClass().getSimpleName() + ": " + SinkDiag.describe(result));
+                }
                 if (result != null && result.maxNumberOfItems >= 0) {
                     bestresult = result;
                     bestPriority = result.fixedPriority.ordinal();
@@ -74,18 +78,34 @@ public class ChassiModule extends LogisticsGuiModule {
                 false,
                 ModulePositionType.SLOT,
                 ((ChassiTargetInformation) bestresult.addInfo).getModuleSlot());
+        boolean diag = SinkDiag.isActive();
         if (invUtil == null) {
+            if (diag) {
+                SinkDiag.log("  chassis refused: no inventory in front of it");
+            }
             return null;
         }
         int roomForItem = invUtil.roomForItem(item);
+        if (diag) {
+            SinkDiag.log("  chassis " + invUtil.getClass().getSimpleName() + " room=" + roomForItem);
+        }
         if (roomForItem < 1) {
+            if (diag) {
+                SinkDiag.log("  chassis refused: no room");
+            }
             return null;
         }
         if (includeInTransit) {
             int onRoute = _parentPipe.countOnRoute(item);
             roomForItem = invUtil.roomForItem(item, onRoute + item.getMaxStackSize());
             roomForItem -= onRoute;
+            if (diag) {
+                SinkDiag.log("  chassis onRoute=" + onRoute + " room after on-route=" + roomForItem);
+            }
             if (roomForItem < 1) {
+                if (diag) {
+                    SinkDiag.log("  chassis refused: on-route items use up the room");
+                }
                 return null;
             }
         }
