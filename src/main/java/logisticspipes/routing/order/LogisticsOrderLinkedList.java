@@ -90,6 +90,20 @@ public class LogisticsOrderLinkedList<E extends LogisticsOrder, I> implements It
         return globalExtraCount != 0;
     }
 
+    /**
+     * Moves an order that is already in the list to the front. It stays the same order, so nothing is counted again:
+     * the extras counts only change when an order joins or leaves.
+     *
+     * @return false if it isn't in the list
+     */
+    public boolean moveToFront(E order) {
+        if (!list.remove(order)) {
+            return false;
+        }
+        list.addFirst(order);
+        return true;
+    }
+
     public E removeFirst() {
         E elem = list.removeFirst();
         elemRemove(elem);

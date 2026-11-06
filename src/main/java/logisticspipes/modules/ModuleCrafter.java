@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -113,6 +114,7 @@ import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IOrderInfoProvider.ResourceType;
 import logisticspipes.routing.order.LogisticsItemOrder;
+import logisticspipes.routing.order.LogisticsItemOrderManager;
 import logisticspipes.utils.AdjacentTile;
 import logisticspipes.utils.CacheHolder.CacheTypes;
 import logisticspipes.utils.DelayedGeneric;
@@ -1536,12 +1538,14 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
         int itemsleft = itemsToExtract();
         int stacksleft = stacksToExtract();
+        if (servesOldestFirst()) {
+            extractOldestFirst(crafters, itemsleft, stacksleft);
+            return;
+        }
         while (itemsleft > 0 && stacksleft > 0
                 && (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA))) {
             LogisticsItemOrder nextOrder = _service.getItemOrderManager()
                     .peekAtTopRequest(ResourceType.CRAFTING, ResourceType.EXTRA); // fetch but not remove.
-            int maxtosend = Math.min(itemsleft, nextOrder.getResource().stack.getStackSize());
-            maxtosend = Math.min(nextOrder.getResource().getItem().getMaxStackSize(), maxtosend);
             // Decided before extracting, not after: with nowhere to put the result, leaving it in the machine is
             // backpressure the player can see, where pulling it out first would only make it bounce.
             ResultRoute route = routeForResult(nextOrder);
@@ -1549,16 +1553,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 _service.getItemOrderManager().deferSend();
                 break;
             }
-            if (route == ResultRoute.TO_ORDER) {
-                // A Smart Crafter takes only what its released sets still need; the rest waits for its next set.
-                maxtosend = Math.min(maxtosend, gatedAllowance(nextOrder));
-            } else {
-                // Only take out what the chosen buffer has room for, so the result can be addressed to it.
-                ModuleCraftingBuffer buffer = resultBufferFor(nextOrder);
-                if (buffer != null) {
-                    maxtosend = Math.max(1, buffer.roomFor(nextOrder.getResource().getItem(), maxtosend));
-                }
-            }
+            int maxtosend = maxToSend(nextOrder, route, itemsleft);
             // retrieve the new crafted items
             ItemStack extracted = null;
             AdjacentTile tile = null;
@@ -1610,55 +1605,216 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 stacksleft -= 1;
                 itemsleft -= numtosend;
                 ItemStack stackToSend = extracted.splitStack(numtosend);
-                if (route == ResultRoute.TO_BUFFER) {
-                    // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
-                    // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
-                    onResultBuffered(nextOrder, stackToSend.stackSize);
-                    // Addressed to the buffer nearest the machine it is for. If that buffer can't take the whole stack
-                    // after all, it goes out unaddressed as before, to whichever buffer sinks it.
-                    ModuleCraftingBuffer buffer = resultBufferFor(nextOrder);
-                    ItemIdentifier sentID = ItemIdentifier.get(stackToSend);
-                    if (buffer != null && buffer.hasRoomFor(sentID, stackToSend.stackSize)) {
-                        buffer.reserve(sentID, stackToSend.stackSize);
-                        sendFrom(tile, stackToSend, buffer.getBufferRouter(), buffer.getTargetInformation());
-                    } else {
-                        sendUnrouted(tile, stackToSend, nextOrder.getInformation());
-                    }
-                    _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
-                } else if (nextOrder.getDestination() != null) {
-                    SinkReply reply = LogisticsManager.canSink(
-                            nextOrder.getDestination().getRouter(),
-                            null,
-                            true,
-                            ItemIdentifier.get(stackToSend),
-                            null,
-                            true,
-                            false);
-                    boolean defersend = reply == null || reply.bufferMode != BufferMode.NONE
-                            || reply.maxNumberOfItems < 1;
-                    IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stackToSend);
-                    item.setDestination(nextOrder.getDestination().getRouter().getSimpleID());
-                    item.setTransportMode(TransportMode.Active);
-                    item.setAdditionalTargetInformation(nextOrder.getInformation());
-                    queueResult(tile, item);
-                    IGatedItemSink gate = gateFor(nextOrder);
-                    if (gate != null) {
-                        // Counted as on its way, so the gate doesn't hand out the same room twice.
-                        gate.onGatedSend(
-                                ItemIdentifier.get(stackToSend),
-                                stackToSend.stackSize,
-                                nextOrder.getInformation());
-                    }
-                    _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item);
-                } else {
-                    sendUnrouted(tile, stackToSend, nextOrder.getInformation());
-                    _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
-                }
+                sendResult(nextOrder, route, tile, stackToSend, true);
                 if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
                     nextOrder = _service.getItemOrderManager()
                             .peekAtTopRequest(ResourceType.CRAFTING, ResourceType.EXTRA); // fetch but not remove.
                 }
             }
+        }
+    }
+
+    /**
+     * Whether results go to the oldest request first instead of to the front of the order queue. Off here: a normal
+     * crafter serves its queue as it always has. The queue rotates whenever the front order can't be served yet -
+     * every check while the machine is still working, among others - so its front says nothing about age, and a
+     * request that keeps asking again (a Trickle Supplier) can win result after result over an older one.
+     */
+    protected boolean servesOldestFirst() {
+        return false;
+    }
+
+    /**
+     * {@link #enabledUpdateEntity}'s result loop for {@link #servesOldestFirst}: each result goes to the oldest order that can
+     * take it right now. An order that can't (its destination is shut and no buffer has room) is passed over for this
+     * check but keeps its place, so it is first again as soon as it can take one. Nothing is moved while the machine
+     * has nothing ready. The orders served are the same as before - every crafting order in the chassis - only the
+     * order they are served in changed.
+     */
+    private void extractOldestFirst(List<AdjacentTile> crafters, int itemsleft, int stacksleft) {
+        LogisticsItemOrderManager orders = _service.getItemOrderManager();
+        // Passed over for the rest of this check: orders whose result has nowhere to go, items not ready in the machine.
+        Set<LogisticsItemOrder> held = new HashSet<>();
+        Set<ItemIdentifier> notReady = new HashSet<>();
+        List<RouteSeen> routes = new ArrayList<>();
+        while (itemsleft > 0 && stacksleft > 0) {
+            LogisticsItemOrder order = orders.oldestRequest(
+                    o -> !held.contains(o) && !notReady.contains(o.getResource().getItem()),
+                    ResourceType.CRAFTING,
+                    ResourceType.EXTRA);
+            if (order == null) {
+                return;
+            }
+            // Decided before extracting, as in the normal loop: a result with nowhere to go stays in the machine.
+            ResultRoute route = routeFor(order, routes);
+            int maxtosend = route == ResultRoute.HOLD ? 0 : maxToSend(order, route, itemsleft);
+            if (maxtosend <= 0) {
+                held.add(order);
+                continue;
+            }
+            ItemStack extracted = null;
+            AdjacentTile tile = null;
+            for (AdjacentTile crafter : resultSourcesFor(order, crafters)) {
+                tile = crafter;
+                extracted = extract(tile, resultToExtract(order), maxtosend);
+                if (extracted != null && extracted.stackSize > 0) {
+                    break;
+                }
+            }
+            if (extracted == null || extracted.stackSize == 0) {
+                // Not made yet. Every order for it would find the same, so they are all skipped for this check.
+                notReady.add(order.getResource().getItem());
+                continue;
+            }
+            _service.getCacheHolder().trigger(CacheTypes.Inventory);
+            lastAccessedCrafter = new WeakReference<>(tile.tile);
+            ItemIdentifier extractedID = ItemIdentifier.get(extracted);
+            onResultExtracted(extractedID, extracted.stackSize);
+            while (extracted.stackSize > 0) {
+                LogisticsItemOrder target = order;
+                ResultRoute targetRoute = route;
+                if (target.isFinished() || target.getAmount() <= 0 || !doesExtractionMatch(target, extractedID)) {
+                    // What came out isn't (or is no longer) for this order: the oldest order that takes it gets it.
+                    target = orders.oldestRequest(
+                            o -> !held.contains(o) && doesExtractionMatch(o, extractedID)
+                                    && routeFor(o, routes) != ResultRoute.HOLD,
+                            ResourceType.CRAFTING,
+                            ResourceType.EXTRA);
+                    targetRoute = target == null ? null : routeFor(target, routes);
+                }
+                int numtosend = Math.min(extracted.stackSize, extractedID.getMaxStackSize());
+                if (target != null) {
+                    numtosend = Math.min(numtosend, target.getResource().stack.getStackSize());
+                    if (targetRoute == ResultRoute.TO_ORDER) {
+                        numtosend = Math.min(numtosend, gatedAllowance(target));
+                    }
+                }
+                if (numtosend <= 0) {
+                    // Nobody can take the rest after all: it goes out unaddressed, as an unmatched result always has.
+                    target = null;
+                    numtosend = Math.min(extracted.stackSize, extractedID.getMaxStackSize());
+                }
+                stacksleft -= 1;
+                itemsleft -= numtosend;
+                ItemStack stackToSend = extracted.splitStack(numtosend);
+                if (target == null) {
+                    sendUnrouted(tile, stackToSend, null);
+                    continue;
+                }
+                // The send counts against the front order, so the chosen one is put there first. No rotation after
+                // it: which order is served next is decided by age, not by place in the queue.
+                orders.moveToFront(target);
+                sendResult(target, targetRoute, tile, stackToSend, false);
+                // A send uses up gate allowance and buffer room, so the routes worked out so far may be stale.
+                routes.clear();
+            }
+        }
+    }
+
+    /** A route worked out during one check, for {@link #routeFor}. */
+    private static final class RouteSeen {
+
+        final LogisticsItemOrder order;
+        final ResultRoute route;
+
+        RouteSeen(LogisticsItemOrder order, ResultRoute route) {
+            this.order = order;
+            this.route = route;
+        }
+    }
+
+    /**
+     * {@link #routeForResult}, worked out once per destination: orders for the same item, to the same destination and
+     * target there, get the same answer, so walking past many held orders for one machine costs one check, not one
+     * each.
+     */
+    private ResultRoute routeFor(LogisticsItemOrder order, List<RouteSeen> seen) {
+        for (RouteSeen known : seen) {
+            if (sameRouting(known.order, order)) {
+                return known.route;
+            }
+        }
+        ResultRoute route = routeForResult(order);
+        seen.add(new RouteSeen(order, route));
+        return route;
+    }
+
+    private static boolean sameRouting(LogisticsItemOrder a, LogisticsItemOrder b) {
+        if (a.getDestination() != b.getDestination()
+                || !a.getResource().getItem().equals(b.getResource().getItem())) {
+            return false;
+        }
+        IAdditionalTargetInformation infoA = a.getInformation();
+        IAdditionalTargetInformation infoB = b.getInformation();
+        return infoA == null ? infoB == null : infoA.sameTargetAs(infoB);
+    }
+
+    /**
+     * How much to take out of the machine for an order: up to a stack of what it still needs, no more than its
+     * destination's gate allows when it goes straight there, or than the chosen buffer has room for.
+     */
+    private int maxToSend(LogisticsItemOrder order, ResultRoute route, int itemsleft) {
+        int maxtosend = Math.min(itemsleft, order.getResource().stack.getStackSize());
+        maxtosend = Math.min(order.getResource().getItem().getMaxStackSize(), maxtosend);
+        if (route == ResultRoute.TO_ORDER) {
+            // A Smart Crafter takes only what its released sets still need; the rest waits for its next set.
+            maxtosend = Math.min(maxtosend, gatedAllowance(order));
+        } else {
+            // Only take out what the chosen buffer has room for, so the result can be addressed to it.
+            ModuleCraftingBuffer buffer = resultBufferFor(order);
+            if (buffer != null) {
+                maxtosend = Math.max(1, buffer.roomFor(order.getResource().getItem(), maxtosend));
+            }
+        }
+        return maxtosend;
+    }
+
+    /**
+     * Sends one stack of results for the front order and counts it against that order. {@code mayDefer}: let the queue
+     * rotate past a destination that buffers or reported no room, as the normal loop always has.
+     */
+    private void sendResult(LogisticsItemOrder order, ResultRoute route, AdjacentTile tile, ItemStack stackToSend,
+            boolean mayDefer) {
+        if (route == ResultRoute.TO_BUFFER) {
+            // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
+            // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
+            onResultBuffered(order, stackToSend.stackSize);
+            // Addressed to the buffer nearest the machine it is for. If that buffer can't take the whole stack
+            // after all, it goes out unaddressed as before, to whichever buffer sinks it.
+            ModuleCraftingBuffer buffer = resultBufferFor(order);
+            ItemIdentifier sentID = ItemIdentifier.get(stackToSend);
+            if (buffer != null && buffer.hasRoomFor(sentID, stackToSend.stackSize)) {
+                buffer.reserve(sentID, stackToSend.stackSize);
+                sendFrom(tile, stackToSend, buffer.getBufferRouter(), buffer.getTargetInformation());
+            } else {
+                sendUnrouted(tile, stackToSend, order.getInformation());
+            }
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
+        } else if (order.getDestination() != null) {
+            SinkReply reply = LogisticsManager.canSink(
+                    order.getDestination().getRouter(),
+                    null,
+                    true,
+                    ItemIdentifier.get(stackToSend),
+                    null,
+                    true,
+                    false);
+            boolean defersend = mayDefer
+                    && (reply == null || reply.bufferMode != BufferMode.NONE || reply.maxNumberOfItems < 1);
+            IRoutedItem item = SimpleServiceLocator.routedItemHelper.createNewTravelItem(stackToSend);
+            item.setDestination(order.getDestination().getRouter().getSimpleID());
+            item.setTransportMode(TransportMode.Active);
+            item.setAdditionalTargetInformation(order.getInformation());
+            queueResult(tile, item);
+            IGatedItemSink gate = gateFor(order);
+            if (gate != null) {
+                // Counted as on its way, so the gate doesn't hand out the same room twice.
+                gate.onGatedSend(ItemIdentifier.get(stackToSend), stackToSend.stackSize, order.getInformation());
+            }
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item);
+        } else {
+            sendUnrouted(tile, stackToSend, order.getInformation());
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
         }
     }
 

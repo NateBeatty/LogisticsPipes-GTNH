@@ -333,6 +333,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
      * The routing itself lives in {@link ModuleCrafter#routeForResult}, which normal crafters share so their results
      * can't slip into a Smart Crafter's machine early either. This only remembers a held result for the status view.
      */
+    /**
+     * Results go to the oldest request first. With the rotating queue a request that keeps asking again (a Trickle
+     * Supplier needing the same intermediate) kept winning results over an older one, which waited for ever.
+     */
+    @Override
+    protected boolean servesOldestFirst() {
+        return true;
+    }
+
     @Override
     protected ResultRoute routeForResult(LogisticsItemOrder order) {
         ResultRoute route = super.routeForResult(order);

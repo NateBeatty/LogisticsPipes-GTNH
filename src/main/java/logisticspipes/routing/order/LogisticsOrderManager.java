@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.function.Predicate;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.world.World;
@@ -108,6 +109,48 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
             top = _orders.getFirst();
         }
         return top;
+    }
+
+    /**
+     * The oldest open order of one of these types that {@code accept} takes, or null. Oldest means oldest request
+     * first, then the order made first (see {@link #compareAge}), not where it is in the queue: the queue rotates, so
+     * its front says nothing about age. One pass, and nothing is moved.
+     */
+    public T oldestRequest(Predicate<T> accept, ResourceType... types) {
+        List<ResourceType> typeList = Arrays.asList(types);
+        T oldest = null;
+        for (T order : _orders) {
+            if (order.isFinished() || order.getAmount() <= 0 || !typeList.contains(order.getType())) {
+                continue;
+            }
+            if ((oldest == null || isOlder(order, oldest)) && accept.test(order)) {
+                oldest = order;
+            }
+        }
+        return oldest;
+    }
+
+    /**
+     * Puts an order at the front of the queue, so {@link #sendSuccessfull} and {@link #sendFailed}, which act on the
+     * front order, act on it.
+     *
+     * @return false if it isn't in this queue
+     */
+    @SuppressWarnings("unchecked")
+    public boolean moveToFront(T order) {
+        if (_orders.isEmpty()) {
+            return false;
+        }
+        T first = _orders.getFirst();
+        if (first == order) {
+            return true;
+        }
+        if (!_orders.moveToFront(order)) {
+            return false;
+        }
+        first.setInProgress(false);
+        order.setInProgress(true);
+        return true;
     }
 
     /**
