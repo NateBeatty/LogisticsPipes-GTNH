@@ -309,8 +309,8 @@ public class ModuleCraftingBuffer extends LogisticsModule implements IRequireRel
     }
 
     /**
-     * The buffer nearest to {@code target} with room for at least one of this item, or null when none that can reach
-     * it has room.
+     * The buffer nearest to {@code target} with room for at least one of this item, or null when none that can reach it
+     * has room.
      */
     public static ModuleCraftingBuffer withRoomFor(ItemIdentifier item, IRouter target) {
         for (ModuleCraftingBuffer buffer : nearestTo(target)) {

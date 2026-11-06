@@ -258,13 +258,8 @@ public class PipeFluidProvider extends FluidRoutedPipe implements IProvideFluids
         }
         if (destination instanceof ModuleSmartCrafter) {
             ModuleSmartCrafter crafter = (ModuleSmartCrafter) destination;
-            return "Smart Crafter " + crafter.getX()
-                    + ","
-                    + crafter.getY()
-                    + ","
-                    + crafter.getZ()
-                    + " m"
-                    + crafter.getPositionInt();
+            return "Smart Crafter " + crafter
+                    .getX() + "," + crafter.getY() + "," + crafter.getZ() + " m" + crafter.getPositionInt();
         }
         if (destination == null) {
             return "nothing";

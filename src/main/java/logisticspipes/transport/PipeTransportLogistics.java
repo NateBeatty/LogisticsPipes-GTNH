@@ -29,6 +29,7 @@ import logisticspipes.LPConstants;
 import logisticspipes.LogisticsPipes;
 import logisticspipes.api.ILogisticsPowerProvider;
 import logisticspipes.blocks.powertile.LogisticsPowerJunctionTileEntity;
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.IBufferItems;
 import logisticspipes.interfaces.IInventoryUtil;
 import logisticspipes.interfaces.IItemAdvancedExistance;
@@ -60,6 +61,7 @@ import logisticspipes.routing.pathfinder.IPipeInformationProvider;
 import logisticspipes.transport.LPTravelingItem.LPTravelingItemClient;
 import logisticspipes.transport.LPTravelingItem.LPTravelingItemServer;
 import logisticspipes.utils.CacheHolder.CacheTypes;
+import logisticspipes.utils.InTransitDiag;
 import logisticspipes.utils.InventoryHelper;
 import logisticspipes.utils.OrientationsUtil;
 import logisticspipes.utils.SidedInventoryMinecraftAdapter;
@@ -250,8 +252,20 @@ public class PipeTransportLogistics {
                     ((IBufferItems) getPipe())
                             .addToBuffer(item.getItemIdentifierStack(), item.getAdditionalTargetInformation()));
             if (item.getItemIdentifierStack().getStackSize() <= 0) {
+                if (Configs.DEBUG_IN_TRANSIT) {
+                    InTransitDiag.note(
+                            item.getInfo(),
+                            "bounced into the pipe's own buffer at " + InTransitDiag.at(container));
+                }
                 return;
             }
+        }
+        if (Configs.DEBUG_IN_TRANSIT) {
+            InTransitDiag.note(
+                    item.getInfo(),
+                    "bounced back x" + item.getItemIdentifierStack().getStackSize()
+                            + " at "
+                            + InTransitDiag.at(container));
         }
 
         // Assign new ID to update ItemStack content
@@ -318,6 +332,10 @@ public class PipeTransportLogistics {
             ItemIdentifierStack stack = data.getItemIdentifierStack();
             ItemRoutingInformation result = getRoutedPipe().getQueuedForItemStack(stack);
             if (result != null) {
+                if (Configs.DEBUG_IN_TRANSIT) {
+                    InTransitDiag
+                            .note(result, "attached to an incoming untracked stack at " + InTransitDiag.at(container));
+                }
                 data.setInformation(result);
                 data.getInfo().setItem(stack);
                 blocked = data.input.getOpposite();
@@ -334,6 +352,11 @@ public class PipeTransportLogistics {
                         data.getTransportMode() == TransportMode.Active,
                         data.getItemIdentifierStack().getItem())
                 && data.getBufferCounter() < MAX_DESTINATION_UNREACHABLE_BUFFER) {
+            if (Configs.DEBUG_IN_TRANSIT) {
+                InTransitDiag.note(
+                        data.getInfo(),
+                        "held in the buffer at " + InTransitDiag.at(container) + " (no route to its destination)");
+            }
             _itemBuffer.add(
                     new Triplet<>(
                             data.getItemIdentifierStack(),
@@ -356,6 +379,13 @@ public class PipeTransportLogistics {
             return ForgeDirection.UNKNOWN;
         }
         if (value == ForgeDirection.UNKNOWN && !data.getDoNotBuffer() && data.getBufferCounter() < 5) {
+            if (Configs.DEBUG_IN_TRANSIT) {
+                // The buffer keeps only the stack: this routing information, and its in-transit entry, are let go.
+                InTransitDiag.note(
+                        data.getInfo(),
+                        "held in the buffer at " + InTransitDiag.at(container)
+                                + " WITHOUT its routing info (nowhere to go)");
+            }
             _itemBuffer.add(
                     new Triplet<>(
                             data.getItemIdentifierStack(),
@@ -366,11 +396,19 @@ public class PipeTransportLogistics {
 
         if (value != ForgeDirection.UNKNOWN && !getRoutedPipe().getRouter().isRoutedExit(value)) {
             if (!isItemExitable(data.getItemIdentifierStack())) {
+                if (Configs.DEBUG_IN_TRANSIT) {
+                    InTransitDiag.note(
+                            data.getInfo(),
+                            "DISCARDED at " + InTransitDiag.at(container) + ": may not leave the pipe that way");
+                }
                 return null;
             }
         }
 
         data.resetDelay();
+        if (Configs.DEBUG_IN_TRANSIT) {
+            InTransitDiag.hop(data.getInfo(), getRoutedPipe());
+        }
 
         return value;
     }
@@ -470,6 +508,19 @@ public class PipeTransportLogistics {
     }
 
     protected void handleTileReachedServer(LPTravelingItemServer arrivingItem, TileEntity tile, ForgeDirection dir) {
+        boolean inTransitDiag = Configs.DEBUG_IN_TRANSIT
+                && !SimpleServiceLocator.pipeInformationManager.isItemPipe(tile);
+        if (inTransitDiag) {
+            InTransitDiag.note(
+                    arrivingItem.getInfo(),
+                    "left " + InTransitDiag.at(container)
+                            + " into "
+                            + InTransitDiag.at(tile)
+                            + " arrived="
+                            + arrivingItem.getArrived()
+                            + " destination="
+                            + InTransitDiag.at(arrivingItem.getDestination()));
+        }
         if (isRouted && getPipe().container.tilePart.getBCPipePluggable(dir) != null
                 && getPipe().container.tilePart.getBCPipePluggable(dir).isAcceptingItems(arrivingItem)) {
             LPTravelingItemServer remainingItem = getPipe().container.tilePart.getBCPipePluggable(dir)
@@ -529,6 +580,9 @@ public class PipeTransportLogistics {
                 // destroy the item on exit if it isn't exitable
                 if (!isSpecialConnectionInformationTransition
                         && !isItemExitable(arrivingItem.getItemIdentifierStack())) {
+                    if (inTransitDiag) {
+                        InTransitDiag.note(arrivingItem.getInfo(), "DESTROYED: not allowed into the inventory");
+                    }
                     return;
                 }
                 // last chance for chassi to back out
@@ -611,11 +665,22 @@ public class PipeTransportLogistics {
                         // For InvSysCon
                         info.getItem().setStackSize(added.stackSize);
                         insertedItemStack(info, tile);
+                        if (inTransitDiag) {
+                            InTransitDiag.note(
+                                    arrivingItem.getInfo(),
+                                    "inserted " + added.stackSize
+                                            + ", "
+                                            + arrivingItem.getItemIdentifierStack().getStackSize()
+                                            + " left over");
+                        }
                     } else {
                         info = arrivingItem.getInfo();
                         info.getItem().setStackSize(added.stackSize);
                         // For InvSysCon
                         insertedItemStack(info, tile);
+                        if (inTransitDiag) {
+                            InTransitDiag.note(info, "inserted all " + added.stackSize);
+                        }
 
                         // back to normal code, break if we've inserted everything, all items disposed of.
                         return; // every item has been inserted.
@@ -646,6 +711,9 @@ public class PipeTransportLogistics {
                             info.getItem().setStackSize(added.stackSize);
                             // For InvSysCon
                             insertedItemStack(info, tile);
+                            if (inTransitDiag) {
+                                InTransitDiag.note(info, "inserted all " + added.stackSize + " (combined sneaky)");
+                            }
                             // back to normal code, break if we've inserted everything, all items disposed of.
                             return; // every item has been inserted.
                         }
@@ -813,6 +881,11 @@ public class PipeTransportLogistics {
         if (MainProxy.isServer(getWorld())) {
             for (LPTravelingItem item : items) {
                 list.add(item.getItemIdentifierStack().makeNormalStack());
+                if (Configs.DEBUG_IN_TRANSIT && item instanceof LPTravelingItemServer) {
+                    InTransitDiag.note(
+                            ((LPTravelingItemServer) item).getInfo(),
+                            "pipe at " + InTransitDiag.at(container) + " broken, item dropped (destination not told)");
+                }
             }
         }
         return list;

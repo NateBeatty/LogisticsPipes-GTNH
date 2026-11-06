@@ -15,6 +15,7 @@ import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidStack;
 
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.IRequireReliableFluidTransport;
 import logisticspipes.interfaces.routing.IRequireReliableTransport;
@@ -31,6 +32,7 @@ import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.order.IDistanceTracker;
 import logisticspipes.utils.FluidIdentifier;
+import logisticspipes.utils.InTransitDiag;
 import logisticspipes.utils.SlidingWindowBitSet;
 import logisticspipes.utils.item.ItemIdentifierStack;
 import logisticspipes.utils.tuples.LPPosition;
@@ -198,6 +200,10 @@ public abstract class LPTravelingItem {
             input = ForgeDirection.getOrientation(data.getInteger("input"));
             output = ForgeDirection.getOrientation(data.getInteger("output"));
             info.readFromNBT(data);
+            if (Configs.DEBUG_IN_TRANSIT) {
+                // A new object: the destination's list still holds the one that was saved, which nothing removes now.
+                InTransitDiag.note(info, "rebuilt from saved data (any old in-transit entry for it is now orphaned)");
+            }
         }
 
         @Override
@@ -209,6 +215,9 @@ public abstract class LPTravelingItem {
                 data.setInteger("output", output.ordinal());
             }
             info.writeToNBT(data);
+            if (Configs.DEBUG_IN_TRANSIT) {
+                InTransitDiag.note(info, "saved to disk at " + InTransitDiag.at(container));
+            }
         }
 
         public EntityItem toEntityItem() {
@@ -218,6 +227,9 @@ public abstract class LPTravelingItem {
                     return null;
                 }
 
+                if (Configs.DEBUG_IN_TRANSIT) {
+                    InTransitDiag.note(info, "dropped out of the pipe at " + InTransitDiag.at(container));
+                }
                 if (getItemIdentifierStack().makeNormalStack().getItem() instanceof LogisticsFluidContainer) {
                     itemWasLost();
                     return null;
@@ -275,6 +287,13 @@ public abstract class LPTravelingItem {
 
         @Override
         public void clearDestination() {
+            if (Configs.DEBUG_IN_TRANSIT && info.destinationint >= 0) {
+                InTransitDiag.note(
+                        info,
+                        "destination " + InTransitDiag.at(info.destinationint)
+                                + " cleared at "
+                                + InTransitDiag.at(container));
+            }
             if (info.destinationint >= 0) {
                 itemWasLost();
                 info.jamlist.add(info.destinationint);
@@ -331,6 +350,11 @@ public abstract class LPTravelingItem {
 
         @Override
         public void setDestination(int destination) {
+            if (Configs.DEBUG_IN_TRANSIT && destination != info.destinationint) {
+                InTransitDiag.note(
+                        info,
+                        "destination set to " + InTransitDiag.at(destination) + " at " + InTransitDiag.at(container));
+            }
             info.destinationint = destination;
             IRouter router = SimpleServiceLocator.routerManager.getRouter(destination);
             if (router != null) {
@@ -369,6 +393,16 @@ public abstract class LPTravelingItem {
             ItemIdentifierStack stackToSend = stackToKeep.clone();
             stackToKeep.setStackSize(itemsToTake);
             stackToSend.setStackSize(stackToSend.getStackSize() - itemsToTake);
+            if (Configs.DEBUG_IN_TRANSIT) {
+                InTransitDiag.note(
+                        info,
+                        "split at " + InTransitDiag.at(container)
+                                + ": kept "
+                                + itemsToTake
+                                + ", "
+                                + stackToSend.getStackSize()
+                                + " sent on separately");
+            }
 
             newId();
 

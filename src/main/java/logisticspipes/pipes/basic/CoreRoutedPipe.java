@@ -112,6 +112,7 @@ import logisticspipes.transport.PipeTransportLogistics;
 import logisticspipes.utils.AdjacentTile;
 import logisticspipes.utils.CacheHolder;
 import logisticspipes.utils.FluidIdentifier;
+import logisticspipes.utils.InTransitDiag;
 import logisticspipes.utils.InventoryHelper;
 import logisticspipes.utils.OrientationsUtil;
 import logisticspipes.utils.PlayerCollectionList;
@@ -274,12 +275,20 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
             throw new NullPointerException();
         }
 
+        if (Configs.DEBUG_IN_TRANSIT) {
+            InTransitDiag.note(
+                    routedItem.getInfo(),
+                    "sent by " + InTransitDiag.at(this) + " to " + InTransitDiag.at(routedItem.getDestination()));
+        }
         transport.injectItem(routedItem, from.getOpposite());
 
         IRouter r = SimpleServiceLocator.routerManager.getRouterUnsafe(routedItem.getDestination(), false);
         if (r != null) {
             CoreRoutedPipe pipe = r.getCachedPipe();
             if (pipe != null) {
+                if (Configs.DEBUG_IN_TRANSIT) {
+                    InTransitDiag.note(routedItem.getInfo(), "counted as on its way to " + InTransitDiag.at(pipe));
+                }
                 pipe.notifyOfSend(routedItem.getInfo());
             } else {
                 // TODO: handle sending items to known chunk-unloaded destination?
@@ -298,7 +307,12 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
     }
 
     public void notifyOfReroute(ItemRoutingInformation routedItem) {
-        _inTransitToMe.remove(routedItem);
+        boolean removed = _inTransitToMe.remove(routedItem);
+        if (Configs.DEBUG_IN_TRANSIT) {
+            InTransitDiag.note(
+                    routedItem,
+                    "rerouted away from " + InTransitDiag.at(this) + (removed ? "" : " (it wasn't counted here)"));
+        }
     }
 
     // When Recreating the Item from the TE version we have the same hashCode but a different instance so we need to
@@ -408,6 +422,10 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
                 }
                 debug.log("Timed Out: %s (%d)", p.getItem().getFriendlyName(), p.hashCode());
             }
+        }
+        if (Configs.DEBUG_IN_TRANSIT && MainProxy.isServer(getWorld())
+                && (MainProxy.getGlobalTick() + _delayOffset) % InTransitDiag.SCAN_INTERVAL == 0) {
+            InTransitDiag.scan(this, _inTransitToMe);
         }
         // update router before ticking logic/transport
         getRouter().update(
@@ -1361,7 +1379,13 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
     }
 
     public void notifyOfItemArival(ItemRoutingInformation information) {
-        _inTransitToMe.remove(information);
+        boolean removed = _inTransitToMe.remove(information);
+        if (Configs.DEBUG_IN_TRANSIT) {
+            InTransitDiag.note(
+                    information,
+                    "arrival/turn-away noted at " + InTransitDiag.at(this)
+                            + (removed ? "" : " (it wasn't counted here)"));
+        }
         if (this instanceof IRequireReliableTransport) {
             ((IRequireReliableTransport) this).itemArrived(information.getItem(), information.targetInfo);
         }

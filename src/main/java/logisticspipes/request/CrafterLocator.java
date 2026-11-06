@@ -21,6 +21,7 @@ import logisticspipes.interfaces.routing.ICraft;
 import logisticspipes.interfaces.routing.ICraftItems;
 import logisticspipes.interfaces.routing.IFilter;
 import logisticspipes.interfaces.routing.IRequestItems;
+import logisticspipes.items.LogisticsFluidContainer;
 import logisticspipes.modules.abstractmodules.LogisticsModule;
 import logisticspipes.network.LPDataInputStream;
 import logisticspipes.network.LPDataOutputStream;
@@ -28,7 +29,6 @@ import logisticspipes.pipes.PipeLogisticsChassi;
 import logisticspipes.pipes.basic.CoreRoutedPipe;
 import logisticspipes.pipes.basic.LogisticsTileGenericPipe;
 import logisticspipes.proxy.SimpleServiceLocator;
-import logisticspipes.items.LogisticsFluidContainer;
 import logisticspipes.request.resources.FluidResource;
 import logisticspipes.request.resources.IResource;
 import logisticspipes.request.resources.ItemResource;
@@ -92,8 +92,8 @@ public class CrafterLocator {
     }
 
     /**
-     * @param item an item, or LP's fluid container standing for a fluid (the request table's fluid view sends one),
-     *             in which case the crafters of that fluid are found
+     * @param item an item, or LP's fluid container standing for a fluid (the request table's fluid view sends one), in
+     *             which case the crafters of that fluid are found
      */
     public static List<Location> find(CoreRoutedPipe requester, ItemIdentifier item) {
         List<Location> found = new ArrayList<>();

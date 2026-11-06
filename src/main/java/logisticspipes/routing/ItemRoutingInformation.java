@@ -42,6 +42,15 @@ public class ItemRoutingInformation {
         that.targetInfo = targetInfo;
         that.job = job;
         that.item = getItem().clone();
+        if (diagTrail != null) {
+            that.diagTrail = new ArrayList<>(diagTrail);
+            that.diagLastEvent = diagLastEvent;
+            that.diagRepeats = diagRepeats;
+            that.diagHopX = diagHopX;
+            that.diagHopY = diagHopY;
+            that.diagHopZ = diagHopZ;
+            that.diagHopTick = diagHopTick;
+        }
         return that;
     }
 
@@ -59,6 +68,17 @@ public class ItemRoutingInformation {
      * again for a cancelled one. Not saved: jobs don't survive a restart either.
      */
     public CraftingJob job;
+
+    /*
+     * TEMP [InTransit DIAG] (Configs.DEBUG_IN_TRANSIT): what happened to this item, for a destination that still counts
+     * it as on its way long after it should have arrived. Null while the switch is off. Not saved.
+     */
+    public List<String> diagTrail;
+    public String diagLastEvent;
+    public int diagRepeats;
+    public boolean diagReported;
+    public int diagHopX, diagHopY, diagHopZ;
+    public long diagHopTick = -1;
 
     private long delay = 640 + MainProxy.getGlobalTick();
 

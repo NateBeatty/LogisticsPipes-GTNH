@@ -296,8 +296,8 @@ public class PipeItemsRequestLogistics extends CoreRoutedPipe implements IReques
         int to = (int) Math.min(stockKeys.length, from + Math.max(1, Math.min(count.longValue(), 10000)));
         StringBuilder page = new StringBuilder();
         for (int i = from; i < to; i++) {
-            page.append(stockKeys[i] >>> 32).append(' ').append((int) stockKeys[i]).append(' ')
-                    .append(stockCounts[i]).append('\n');
+            page.append(stockKeys[i] >>> 32).append(' ').append((int) stockKeys[i]).append(' ').append(stockCounts[i])
+                    .append('\n');
         }
         return page.toString();
     }

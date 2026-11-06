@@ -60,7 +60,8 @@ public class ChassiModule extends LogisticsGuiModule {
                 SinkReply result = module
                         .sinksItem(item, bestPriority, bestCustomPriority, allowDefault, includeInTransit);
                 if (SinkDiag.isActive()) {
-                    SinkDiag.log("  chassis module " + module.getClass().getSimpleName() + ": " + SinkDiag.describe(result));
+                    SinkDiag.log(
+                            "  chassis module " + module.getClass().getSimpleName() + ": " + SinkDiag.describe(result));
                 }
                 if (result != null && result.maxNumberOfItems >= 0) {
                     bestresult = result;

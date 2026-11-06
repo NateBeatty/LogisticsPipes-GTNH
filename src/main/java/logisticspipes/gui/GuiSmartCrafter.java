@@ -264,10 +264,7 @@ public class GuiSmartCrafter extends ModuleBaseGui {
                 crafter.sendSetting(SmartCrafterSetting.IGNORE_DURABILITY, 0, ignoreDurabilityBox.change() ? 1 : 0);
                 return;
             case ID_SHARED_OUTPUTS:
-                crafter.sendSetting(
-                        SmartCrafterSetting.SHARED_OUTPUT_SATELLITES,
-                        0,
-                        sharedOutputsBox.change() ? 1 : 0);
+                crafter.sendSetting(SmartCrafterSetting.SHARED_OUTPUT_SATELLITES, 0, sharedOutputsBox.change() ? 1 : 0);
                 return;
             default:
                 super.actionPerformed(guibutton);

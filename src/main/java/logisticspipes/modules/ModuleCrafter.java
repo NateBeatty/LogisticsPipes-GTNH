@@ -454,7 +454,8 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
      * since taken out of the chassis or no longer makes the item, falls to this module, as all extras did before.
      */
     private ModuleCrafter extraMakerHere(ModuleCrafter maker, IResource requestedItem) {
-        if (maker == null || maker == this || maker._service == null
+        if (maker == null || maker == this
+                || maker._service == null
                 || maker._service.getItemOrderManager() != _service.getItemOrderManager()
                 || maker.resultFor(requestedItem) == null) {
             return this;

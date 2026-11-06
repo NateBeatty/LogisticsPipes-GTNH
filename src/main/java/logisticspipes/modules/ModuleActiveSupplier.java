@@ -63,8 +63,7 @@ import lombok.Setter;
 
 public class ModuleActiveSupplier extends LogisticsGuiModule
         implements IRequestItems, IRequireReliableTransport, IRequestCancelListener, IClientInformationProvider,
-        IHUDModuleHandler,
-        IModuleWatchReciver, IModuleInventoryReceive, ISimpleInventoryEventHandler {
+        IHUDModuleHandler, IModuleWatchReciver, IModuleInventoryReceive, ISimpleInventoryEventHandler {
 
     private final PlayerCollectionList localModeWatchers = new PlayerCollectionList();
 

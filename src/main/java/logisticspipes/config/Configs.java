@@ -73,6 +73,7 @@ public class Configs {
     public static boolean DEBUG_FLUID_BUFFER = false;
     public static boolean DEBUG_REQUESTS = false;
     public static boolean DEBUG_SINK_ROUTING = false;
+    public static boolean DEBUG_IN_TRANSIT = false;
 
     /** Milliseconds per tick a player's request may be planned for, spreading big ones over several ticks; 0 = off. */
     public static int REQUEST_SLICE_MS = 0;
@@ -369,6 +370,13 @@ public class Configs {
                         "sinkRouting",
                         Configs.DEBUG_SINK_ROUTING,
                         "Log how an Extractor MK3 picks a destination, at most once a second per module: each candidate pipe, its reply or why it was skipped, and the winner. Also logs chassis that turn an item away on arrival. [SinkDiag] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_IN_TRANSIT = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "inTransitLeaks",
+                        Configs.DEBUG_IN_TRANSIT,
+                        "Find items a pipe still counts as on their way to it long after they should have arrived or timed out (these use up a chest's room, so routing skips it). Keeps a short history of every routed item and logs it for each overdue one. [InTransit DIAG] in the log.")
                 .getBoolean(false);
 
         Configs.CONFIGURATION.save();

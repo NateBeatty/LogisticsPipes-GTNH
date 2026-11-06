@@ -387,7 +387,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             buffered[slot] -= take;
             taken += take;
             // TEMP [ItemGate DIAG]
-            itemGateDiag("BUFFER DELIVERY LOST " + take + "x" + diagItemName(item) + " for s" + slot + ", re-requested",
+            itemGateDiag(
+                    "BUFFER DELIVERY LOST " + take + "x" + diagItemName(item) + " for s" + slot + ", re-requested",
                     false);
             // Which request it was for is not known here; the re-request runs as a job of its own.
             _lostItems.add(
@@ -1255,10 +1256,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * {@link #sendRemainingFluid} for what a finished set made beyond the order, counted towards that set like the
-     * part that filled the order. An order smaller than a set (a Fluid Supplier topping up a tank) otherwise only
-     * credits its own share, the set never reads as finished, and while new orders keep arriving the gate never
-     * resets: the module holds a released set that no longer exists and never hands its machine over.
+     * {@link #sendRemainingFluid} for what a finished set made beyond the order, counted towards that set like the part
+     * that filled the order. An order smaller than a set (a Fluid Supplier topping up a tank) otherwise only credits
+     * its own share, the set never reads as finished, and while new orders keep arriving the gate never resets: the
+     * module holds a released set that no longer exists and never hands its machine over.
      */
     private void sendSetLeftover(IFluidHandler tank, FluidIdentifier fluid, ForgeDirection drainSide,
             PipeSmartSatellite sat) {
@@ -1512,7 +1513,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
         }
     }
 
-    /** Queues a re-request for a fluid slot. A slot of -1 (the recipe changed since) has nowhere to go and is dropped. */
+    /**
+     * Queues a re-request for a fluid slot. A slot of -1 (the recipe changed since) has nowhere to go and is dropped.
+     */
     private void queueLostFluid(int slot, FluidIdentifier fluid, int amount, CraftingJob job) {
         if (slot >= 0 && fluid != null && amount > 0) {
             lostFluids.add(new LostFluid(slot, fluid, amount, job, now() + LOST_FLUID_RETRY_TICKS));
@@ -1520,9 +1523,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Where a lost fluid is asked to: the slot's Smart Satellite, or this module for a slot without one. Asked here,
-     * a satellite slot's fluid would be turned away by this module and go to storage. Null while the satellite can't
-     * be reached.
+     * Where a lost fluid is asked to: the slot's Smart Satellite, or this module for a slot without one. Asked here, a
+     * satellite slot's fluid would be turned away by this module and go to storage. Null while the satellite can't be
+     * reached.
      */
     private IRequestFluid lostFluidTarget(int slot) {
         return advancedSatelliteIdArray[slot] == 0 ? this : fluidSatelliteFor(slot);
@@ -1562,12 +1565,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
             int received;
             CraftingJob previous = CraftingJobs.enter(job);
             try {
-                received = RequestTree.requestFluidPartial(
-                        lost.fluid,
-                        lost.amount,
-                        target,
-                        null,
-                        ingredientInformation(lost.slot));
+                received = RequestTree
+                        .requestFluidPartial(lost.fluid, lost.amount, target, null, ingredientInformation(lost.slot));
             } finally {
                 CraftingJobs.exit(previous);
             }
@@ -2271,8 +2270,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         packet.setOutputRole(roles).setOutputChance(chances).setOutputSatelliteId(outputSatelliteId.clone())
                 .setFluidAmount(fluidAmount.clone()).setCleanupEnabled(cleanupEnabled)
                 .setIgnoreDurability(ignoreDurability).setSharedOutputSatellites(sharedOutputSatellites)
-                .setStatus(status).setStatusItem(statusItem)
-                .setSetsReleased(setsReleased);
+                .setStatus(status).setStatusItem(statusItem).setSetsReleased(setsReleased);
         packet.setSatelliteId(satelliteId).setAdvancedSatelliteIdArray(advancedSatelliteIdArray).setPriority(priority)
                 .setAmount(amount).setLiquidSatelliteIdArray(liquidSatelliteIdArray)
                 .setLiquidSatelliteId(liquidSatelliteId);
@@ -3013,8 +3011,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
                 for (Iterator<ItemIdentifier> it = items.iterator(); it.hasNext() && stacks < MAX_SWEEP_STACKS;) {
                     ItemIdentifier item = it.next();
                     // One of this recipe's own results is left to this module's own extraction and drain. An item some
-                    // crafter with sets out (this one included) loads into this machine is never touched: a GT input bus
-                    // lets everything be pulled from it, so another recipe's "leftover result" can be a live ingredient.
+                    // crafter with sets out (this one included) loads into this machine is never touched: a GT input
+                    // bus
+                    // lets everything be pulled from it, so another recipe's "leftover result" can be a live
+                    // ingredient.
                     if (!owner.isOurResult(item, output) || outputIndexFor(item) >= 0
                             || (source.sat != null && anyCrafterWaitsFor(source.sat, item))
                             || itemStillNeededAt(source.key, item, null)) {
@@ -3138,8 +3138,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
     }
 
     /**
-     * Whether something this recipe let into its machines is still waiting to be crafted: released sets not finished,
-     * a "Request set" set handed out, or deliveries still on their way. Only then does what of its ingredients is in a
+     * Whether something this recipe let into its machines is still waiting to be crafted: released sets not finished, a
+     * "Request set" set handed out, or deliveries still on their way. Only then does what of its ingredients is in a
      * machine belong to it. Having orders isn't enough: with no set out nothing of its was let in, so anything there is
      * a stray (a restart's leftover, a lost item's replacement), and keeping it for an order made it permanent wherever
      * a supplier keeps the orders coming.
@@ -3298,8 +3298,15 @@ public class ModuleSmartCrafter extends ModuleCrafter
         super.itemLost(item, info);
         int slot = ingredientSlot(info);
         // TEMP [ItemGate DIAG]
-        itemGateDiag("LOST " + item.getStackSize() + "x" + diagItemName(item.getItem()) + " for s" + slot
-                + " cancelledJob=" + CraftingJobs.currentIsCancelled() + (reportingUnsent ? " (never sent)" : ""));
+        itemGateDiag(
+                "LOST " + item.getStackSize()
+                        + "x"
+                        + diagItemName(item.getItem())
+                        + " for s"
+                        + slot
+                        + " cancelledJob="
+                        + CraftingJobs.currentIsCancelled()
+                        + (reportingUnsent ? " (never sent)" : ""));
         // A provider that found its stock gone (another provider on the same inventory sent it first) reports the order
         // as lost, but nothing left: it was never counted on its way, and the allowance it was waiting for is still
         // there for the re-request. Taking it off inFlight would forget a different delivery still in the pipes.
@@ -3534,42 +3541,19 @@ public class ModuleSmartCrafter extends ModuleCrafter
         if (!Configs.DEBUG_ITEM_GATE || _service == null || getWorld() == null) {
             return;
         }
-        StringBuilder line = new StringBuilder("[ItemGate DIAG] ").append(getX())
-                .append(",")
-                .append(getY())
-                .append(",")
-                .append(getZ())
-                .append(" m")
-                .append(getPositionInt())
-                .append(" [")
-                .append(diagRecipeName())
-                .append("] ")
-                .append(event)
-                .append(" | sets=")
-                .append(setsReleased)
-                .append(" claimed=")
-                .append(holdsClaim())
-                .append(" credited=")
-                .append(creditedSets);
+        StringBuilder line = new StringBuilder("[ItemGate DIAG] ").append(getX()).append(",").append(getY()).append(",")
+                .append(getZ()).append(" m").append(getPositionInt()).append(" [").append(diagRecipeName()).append("] ")
+                .append(event).append(" | sets=").append(setsReleased).append(" claimed=").append(holdsClaim())
+                .append(" credited=").append(creditedSets);
         for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
             if (!isGatedSlot(slot)) {
                 continue;
             }
             ItemIdentifierStack material = getMaterials(slot);
-            line.append(" | s")
-                    .append(slot)
-                    .append(" ")
-                    .append(material.getStackSize())
-                    .append("x")
-                    .append(diagItemName(material.getItem()))
-                    .append(" sat=")
-                    .append(advancedSatelliteIdArray[slot])
-                    .append(" allow=")
-                    .append(allowance[slot])
-                    .append(" inFlight=")
-                    .append(inFlight[slot])
-                    .append(" buffered=")
-                    .append(buffered[slot]);
+            line.append(" | s").append(slot).append(" ").append(material.getStackSize()).append("x")
+                    .append(diagItemName(material.getItem())).append(" sat=").append(advancedSatelliteIdArray[slot])
+                    .append(" allow=").append(allowance[slot]).append(" inFlight=").append(inFlight[slot])
+                    .append(" buffered=").append(buffered[slot]);
         }
         if (withMachine) {
             line.append(" | machine: ").append(diagContents(sweepTarget(null)));
@@ -3607,12 +3591,8 @@ public class ModuleSmartCrafter extends ModuleCrafter
         for (int i = 0; i < target.inv.getSizeInventory(); i++) {
             ItemStack stack = target.inv.getStackInSlot(i);
             if (stack != null && stack.stackSize > 0) {
-                contents.append(contents.length() == 0 ? "" : ", ")
-                        .append(i)
-                        .append(":")
-                        .append(stack.stackSize)
-                        .append("x")
-                        .append(diagItemName(ItemIdentifier.get(stack)));
+                contents.append(contents.length() == 0 ? "" : ", ").append(i).append(":").append(stack.stackSize)
+                        .append("x").append(diagItemName(ItemIdentifier.get(stack)));
             }
         }
         return contents.length() == 0 ? "empty" : contents.toString();
@@ -4362,7 +4342,14 @@ public class ModuleSmartCrafter extends ModuleCrafter
             for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
                 if (isGatedSlotAt(slot, sat)) {
                     ItemIdentifierStack material = getMaterials(slot);
-                    if (!place(inv, side, slots, simulated, material, material.getStackSize(), perSet[slot],
+                    if (!place(
+                            inv,
+                            side,
+                            slots,
+                            simulated,
+                            material,
+                            material.getStackSize(),
+                            perSet[slot],
                             multiStack)) {
                         return sets;
                     }
@@ -4723,8 +4710,12 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     private void sendSwept(SweepTarget target, ItemStack stack) {
         // TEMP [ItemGate DIAG]
-        itemGateDiag("SWEPT " + stack.stackSize + "x" + diagItemName(ItemIdentifier.get(stack)) + " out of "
-                + (target.sat == null ? "machine" : "sat " + target.sat.satelliteId));
+        itemGateDiag(
+                "SWEPT " + stack.stackSize
+                        + "x"
+                        + diagItemName(ItemIdentifier.get(stack))
+                        + " out of "
+                        + (target.sat == null ? "machine" : "sat " + target.sat.satelliteId));
         if (target.sat == null) {
             _service.queueRoutedItem(
                     SimpleServiceLocator.routedItemHelper.createNewTravelItem(stack),
@@ -4857,9 +4848,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
      */
     private static boolean itemStillNeededAt(MachineClaims.Key key, ItemIdentifier item, ModuleSmartCrafter except) {
         for (ModuleSmartCrafter crafter : ModuleSmartCrafter.AllCrafters) {
-            if (crafter == except || crafter._service == null
-                    || crafter.getWorld() == null
-                    || !crafter.hasSetsOut()) {
+            if (crafter == except || crafter._service == null || crafter.getWorld() == null || !crafter.hasSetsOut()) {
                 continue;
             }
             for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
@@ -4903,10 +4892,10 @@ public class ModuleSmartCrafter extends ModuleCrafter
     /**
      * Places count of the material into the simulated slots, filling matching stacks before empty slots.
      * <p>
-     * Many GT machines won't hold more than one stack of an item type even when they have free slots. When the machine's
-     * own setting can be read ({@link GregTechMultiStack}) it is followed: with several stacks allowed only the free
-     * slots limit it, with one stack the machine is never given more than one in total. Otherwise the machine is never
-     * given more than one stack of an item in total, or one set's worth if the recipe needs more than that.
+     * Many GT machines won't hold more than one stack of an item type even when they have free slots. When the
+     * machine's own setting can be read ({@link GregTechMultiStack}) it is followed: with several stacks allowed only
+     * the free slots limit it, with one stack the machine is never given more than one in total. Otherwise the machine
+     * is never given more than one stack of an item in total, or one set's worth if the recipe needs more than that.
      *
      * @param perSet     how many of this item one recipe set needs
      * @param multiStack whether the machine takes several stacks of one item, or null when that isn't known

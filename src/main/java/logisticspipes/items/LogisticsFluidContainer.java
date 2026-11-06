@@ -57,8 +57,8 @@ public class LogisticsFluidContainer extends LogisticsItem implements IItemAdvan
 
     /**
      * The fluid's own name, as NEI and GT show it. Translating {@link #getUnlocalizedName(ItemStack)} only works for
-     * fluids with a language file entry; newer GT materials hand their name over in
-     * {@code Fluid.getLocalizedName} instead, and showed up as their raw key ("fluid.3,3diaminobenzidine").
+     * fluids with a language file entry; newer GT materials hand their name over in {@code Fluid.getLocalizedName}
+     * instead, and showed up as their raw key ("fluid.3,3diaminobenzidine").
      */
     @Override
     public String getItemStackDisplayName(ItemStack itemstack) {

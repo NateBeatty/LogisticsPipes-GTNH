@@ -255,8 +255,12 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
                     missing.append(missing.length() == 0 ? "" : ", ")
                             .append(display == null ? resource.toString() : display.getFriendlyName());
                 }
-                LogisticsPipes.log.info("[Trickle DIAG] " + where() + " request for 1 " + item.getFriendlyName()
-                        + " failed, missing: " + missing);
+                LogisticsPipes.log.info(
+                        "[Trickle DIAG] " + where()
+                                + " request for 1 "
+                                + item.getFriendlyName()
+                                + " failed, missing: "
+                                + missing);
             }
 
             @Override
@@ -320,8 +324,8 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
     private final Map<ItemIdentifier, Long> lastSkipDiag = new HashMap<>();
 
     /**
-     * [Trickle DIAG], with the trickleSupplier debug config: why an item isn't requested because one is thought to be on
-     * its way. At most once a minute per item.
+     * [Trickle DIAG], with the trickleSupplier debug config: why an item isn't requested because one is thought to be
+     * on its way. At most once a minute per item.
      */
     private void logSkipDiag(ItemIdentifier item) {
         if (!Configs.DEBUG_TRICKLE) {
@@ -333,45 +337,23 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
             return;
         }
         lastSkipDiag.put(item, now);
-        StringBuilder line = new StringBuilder("[Trickle DIAG] ").append(where())
-                .append(" skipping ")
-                .append(item.getFriendlyName())
-                .append(": requested=")
-                .append(_requestedItems.get(item));
+        StringBuilder line = new StringBuilder("[Trickle DIAG] ").append(where()).append(" skipping ")
+                .append(item.getFriendlyName()).append(": requested=").append(_requestedItems.get(item));
         InFlight request = inFlight.get(item);
         if (request == null) {
             line.append(" | NO JOB TRACKED");
         } else {
             CraftingJob job = request.job;
-            line.append(" | job #").append(job.getId())
-                    .append(" done=")
-                    .append(job.isDone())
+            line.append(" | job #").append(job.getId()).append(" done=").append(job.isDone())
                     .append(request.doneSince < 0 ? "" : " (for " + (now - request.doneSince) + " ticks)")
-                    .append(" cancelled=")
-                    .append(job.isCancelled())
-                    .append(" ordersLost=")
-                    .append(job.isOrdersLost())
-                    .append(" replanShort=")
-                    .append(job.isReplanShort())
-                    .append(" crafting=")
-                    .append(job.isCrafting())
-                    .append(" sent=")
-                    .append(job.getSent())
-                    .append("/")
-                    .append(job.getTotal());
+                    .append(" cancelled=").append(job.isCancelled()).append(" ordersLost=").append(job.isOrdersLost())
+                    .append(" replanShort=").append(job.isReplanShort()).append(" crafting=").append(job.isCrafting())
+                    .append(" sent=").append(job.getSent()).append("/").append(job.getTotal());
             for (CraftingJob.WaitingOn open : job.getWaitingOn()) {
-                line.append(" | open ").append(open.getType())
-                        .append(" ")
-                        .append(open.getItem() == null ? "?" : open.getItem().getFriendlyName())
-                        .append(" at ")
-                        .append(open.getPosition())
-                        .append(" done ")
-                        .append(open.getDone())
-                        .append("/")
-                        .append(open.getRequired())
-                        .append(" idle ")
-                        .append(open.getIdleTicks())
-                        .append("t");
+                line.append(" | open ").append(open.getType()).append(" ")
+                        .append(open.getItem() == null ? "?" : open.getItem().getFriendlyName()).append(" at ")
+                        .append(open.getPosition()).append(" done ").append(open.getDone()).append("/")
+                        .append(open.getRequired()).append(" idle ").append(open.getIdleTicks()).append("t");
             }
         }
         LogisticsPipes.log.info(line.toString());

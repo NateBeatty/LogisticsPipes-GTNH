@@ -215,8 +215,8 @@ public class CraftingJob {
     }
 
     /**
-     * Tells a supplier that an order delivering to it won't come, so it stops counting the rest as on its way. Only
-     * the part not yet sent is reported; what is already moving still arrives and is counted off as usual.
+     * Tells a supplier that an order delivering to it won't come, so it stops counting the rest as on its way. Only the
+     * part not yet sent is reported; what is already moving still arrives and is counted off as usual.
      */
     private void tellCancelListener(LogisticsOrder order) {
         int amount = order.getAmount();

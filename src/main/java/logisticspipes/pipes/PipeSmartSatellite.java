@@ -353,8 +353,8 @@ public class PipeSmartSatellite extends FluidRoutedPipe
 
     /**
      * A provider couldn't send an order for this satellite: its tanks were empty. Unlike a container lost on the way,
-     * nothing of it was counted as on its way, so there is nothing to refund; the crafter the order was for asks for
-     * it again instead, or its set waits for good.
+     * nothing of it was counted as on its way, so there is nothing to refund; the crafter the order was for asks for it
+     * again instead, or its set waits for good.
      */
     public void fluidSendFailed(FluidIdentifier fluid, Integer amount, IAdditionalTargetInformation info) {
         ModuleSmartCrafter c = ModuleSmartCrafter.crafterOf(info);

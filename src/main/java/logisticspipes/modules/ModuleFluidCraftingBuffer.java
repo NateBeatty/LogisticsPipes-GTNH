@@ -327,8 +327,8 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
      * <p>
      * That is the nearest one with room, unless a buffer already holding the fluid (or with some on its way) has room
      * too and is not too much further away. Most tanks hold a single fluid, so spreading one fluid over every nearest
-     * buffer uses up tanks other fluids then can't go in. How much further is worth it grows as the free tanks run
-     * out, from {@link Configs#FLUID_BUFFER_SAME_FLUID_MIN_RANGE} with every tank free to
+     * buffer uses up tanks other fluids then can't go in. How much further is worth it grows as the free tanks run out,
+     * from {@link Configs#FLUID_BUFFER_SAME_FLUID_MIN_RANGE} with every tank free to
      * {@link Configs#FLUID_BUFFER_SAME_FLUID_MAX_RANGE} with none.
      */
     public static ModuleFluidCraftingBuffer chooseFor(FluidIdentifier fluid, int amount, IRouter target) {
@@ -347,15 +347,8 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
             double distance = buffer.distanceTo(target);
             boolean holds = buffer.holdsOrAwaits(fluid);
             if (line != null) {
-                line.append(" | ")
-                        .append(buffer.getX())
-                        .append(",")
-                        .append(buffer.getY())
-                        .append(",")
-                        .append(buffer.getZ())
-                        .append(" d=")
-                        .append(Math.round(distance))
-                        .append(holds ? " holds" : "")
+                line.append(" | ").append(buffer.getX()).append(",").append(buffer.getY()).append(",")
+                        .append(buffer.getZ()).append(" d=").append(Math.round(distance)).append(holds ? " holds" : "")
                         .append(room ? "" : " no room");
             }
             if (!room || chosen != null) {
@@ -396,7 +389,10 @@ public class ModuleFluidCraftingBuffer extends LogisticsModule implements IFluid
                             + (nearest == null ? "none" : "at d=" + Math.round(nearest.distanceTo(target)))
                             + ") -> "
                             + (chosen == null ? "NO BUFFER"
-                                    : chosen.getX() + "," + chosen.getY() + "," + chosen.getZ()
+                                    : chosen.getX() + ","
+                                            + chosen.getY()
+                                            + ","
+                                            + chosen.getZ()
                                             + (chosen == nearest ? " (nearest)" : " (holds it)"))
                             + line);
         }
