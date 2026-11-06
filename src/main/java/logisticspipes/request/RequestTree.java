@@ -366,10 +366,11 @@ public class RequestTree extends RequestTreeNode {
             return tree.getPromiseAmount();
         } else {
             if (log != null) {
-                if (!tree.isDone()) {
+                boolean missingWanted = log.wantsMissingItems();
+                if (!tree.isDone() && missingWanted) {
                     tree.recurseFailedRequestTree();
                 }
-                if (logMissing) {
+                if (logMissing && missingWanted) {
                     tree.sendMissingMessage(log);
                 }
                 if (logUsed) {

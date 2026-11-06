@@ -59,6 +59,24 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
     /** Something arrived, was lost or needs requesting again: check on the next tick, not in up to 5 seconds. */
     private boolean ready = false;
 
+    /** How long an item whose request failed is left alone before it is tried again; doubles each time, up to the max. */
+    private static final long BACKOFF_BASE_TICKS = 20 * 10;
+    private static final long BACKOFF_MAX_TICKS = 20 * 60;
+
+    /** An item whose request failed: how many times in a row, and the world time it may be tried again. */
+    private static final class Failure {
+
+        int count;
+        long retryAt;
+    }
+
+    /**
+     * Items whose last request failed. Without this every item that can't be made right now was planned again - in
+     * full, and failing - every few seconds and on every item that arrived anywhere in this supplier, which on a busy
+     * network was nearly every tick. In memory only: after a restart everything is tried once straight away.
+     */
+    private final Map<ItemIdentifier, Failure> failures = new HashMap<>();
+
     @Override
     public void tick() {
         checkInFlight();
@@ -139,6 +157,10 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
                     getSupplyMode() == SupplyMode.Infinite)) {
                 continue;
             }
+            if (backingOff(item)) {
+                setRequestFailed(true); // still failing, as far as anyone knows
+                continue;
+            }
             if (!_service.useEnergy(10)) {
                 break;
             }
@@ -171,6 +193,10 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
             }
             int room = needed.getStackSize() - haveCount;
             if (!wantsMore(i, haveCount, needed.getStackSize(), room, getPatternMode() == PatternMode.Bulk50, false)) {
+                continue;
+            }
+            if (backingOff(needed.getItem())) {
+                setRequestFailed(true); // still failing, as far as anyone knows
                 continue;
             }
             if (!_service.useEnergy(10)) {
@@ -241,17 +267,53 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
 
             @Override
             public void handleSucessfullRequestOfList(List<IResource> resources, LinkedLogisticsOrderList parts) {}
+
+            /** The missing list is only ever logged, so it isn't worked out unless the log is on. */
+            @Override
+            public boolean wantsMissingItems() {
+                return Configs.DEBUG_TRICKLE;
+            }
         }, info);
         boolean success = placed[0];
         _service.getDebug().log("Trickle Supplier: Request of one %s %s", item, success ? "succeeded" : "failed");
         if (!success) {
             setRequestFailed(true);
+            backOff(item);
             return;
         }
+        failures.remove(item);
         _requestedItems.merge(item, 1, Integer::sum);
         if (job[0] != null) {
             inFlight.put(item, new InFlight(job[0]));
         }
+    }
+
+    /**
+     * A request for this item just failed: leave it alone for a while, longer each time it fails again in a row. Other
+     * items arriving no longer make it be planned again; only its timer running out does.
+     */
+    private void backOff(ItemIdentifier item) {
+        Failure failure = failures.computeIfAbsent(item, k -> new Failure());
+        failure.count++;
+        long delay = Math.min(BACKOFF_MAX_TICKS, BACKOFF_BASE_TICKS << Math.min(failure.count - 1, 8));
+        failure.retryAt = _world.getWorld().getTotalWorldTime() + delay;
+        if (Configs.DEBUG_TRICKLE) {
+            LogisticsPipes.log.info(
+                    "[Trickle DIAG] " + where()
+                            + " "
+                            + item.getFriendlyName()
+                            + " failed "
+                            + failure.count
+                            + " time(s) in a row, next try in "
+                            + delay / 20
+                            + " s");
+        }
+    }
+
+    /** Whether this item failed recently and its wait isn't over. */
+    private boolean backingOff(ItemIdentifier item) {
+        Failure failure = failures.get(item);
+        return failure != null && _world.getWorld().getTotalWorldTime() < failure.retryAt;
     }
 
     /** [Trickle DIAG] rate limit, per item. */
