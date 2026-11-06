@@ -139,6 +139,7 @@ import logisticspipes.renderer.LocateHighlighter;
 import logisticspipes.renderer.LogisticsHUDRenderer;
 import logisticspipes.renderer.LogisticsPipeItemRenderer;
 import logisticspipes.renderer.newpipe.LogisticsNewRenderPipe;
+import logisticspipes.request.SlicedRequests;
 import logisticspipes.routing.RouterManager;
 import logisticspipes.routing.ServerRouter;
 import logisticspipes.routing.order.CraftingJobs;
@@ -567,6 +568,7 @@ public class LogisticsPipes {
     public void cleanup(FMLServerStoppingEvent event) {
         SimpleServiceLocator.routerManager.serverStopClean();
         QueuedTasks.clearAllTasks();
+        SlicedRequests.clear();
         HudUpdateTick.clearUpdateFlags();
         PipeItemsSatelliteLogistics.cleanup();
         PipeFluidSatellite.cleanup();

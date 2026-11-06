@@ -17,6 +17,7 @@ import cpw.mods.fml.relauncher.Side;
 import logisticspipes.commands.commands.debug.DebugGuiController;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.proxy.SimpleServiceLocator;
+import logisticspipes.request.SlicedRequests;
 import logisticspipes.routing.order.CraftingJobs;
 import logisticspipes.routing.pathfinder.changedetection.LPWorldAccess;
 import logisticspipes.utils.FluidIdentifier;
@@ -45,6 +46,7 @@ public class LPTickHandler {
         DebugGuiController.instance().execServer();
         if (event.phase == Phase.END) {
             CraftingJobs.serverTick();
+            SlicedRequests.serverTick();
         }
     }
 

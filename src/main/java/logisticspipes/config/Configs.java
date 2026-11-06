@@ -71,6 +71,10 @@ public class Configs {
     public static boolean DEBUG_TRICKLE = false;
     public static boolean DEBUG_SMART_CRAFTER_RECIPE = false;
     public static boolean DEBUG_FLUID_BUFFER = false;
+    public static boolean DEBUG_REQUESTS = false;
+
+    /** Milliseconds per tick a player's request may be planned for, spreading big ones over several ticks; 0 = off. */
+    public static int REQUEST_SLICE_MS = 0;
 
     private static boolean loaded = false;
 
@@ -341,6 +345,22 @@ public class Configs {
                         Configs.DEBUG_FLUID_BUFFER,
                         "Log every choice of Fluid Crafting Buffer for a delivery: the range, each buffer in reach with its distance, whether it holds the fluid and has room, and the one chosen. [FluidBuffer DIAG] in the log.")
                 .getBoolean(false);
+        Configs.DEBUG_REQUESTS = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "requests",
+                        Configs.DEBUG_REQUESTS,
+                        "Log each request made from a request table or request pipe: how long it took to plan, and with requestSliceMs above 0 the ticks and slices it took, slices that ran well over budget, and why a finished plan was found out of date. [Request DIAG] in the log. About one line per request.")
+                .getBoolean(false);
+
+        Configs.REQUEST_SLICE_MS = Math.max(
+                0,
+                Configs.CONFIGURATION.get(
+                        Configuration.CATEGORY_GENERAL,
+                        "requestSliceMs",
+                        Configs.REQUEST_SLICE_MS,
+                        "Milliseconds per server tick spent planning a request made from a request table or request pipe. A big request (thousands of crafts) is then worked out over several ticks instead of freezing the server until it is done; small ones still finish at once. Requests from suppliers, crafters and computers are not affected. 0 turns this off and plans every request at once, as before. Try 5.")
+                        .getInt());
 
         Configs.CONFIGURATION.save();
     }

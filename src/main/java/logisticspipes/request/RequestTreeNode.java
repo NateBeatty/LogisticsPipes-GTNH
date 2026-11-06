@@ -17,6 +17,7 @@ import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
+import logisticspipes.config.Configs;
 import logisticspipes.interfaces.IStack;
 import logisticspipes.interfaces.routing.IAdditionalTargetInformation;
 import logisticspipes.interfaces.routing.ICraft;
@@ -47,6 +48,7 @@ public class RequestTreeNode {
 
     private RequestTreeNode(ICraftingTemplate template, IResource requestType, RequestTreeNode parentNode,
             EnumSet<ActiveRequestType> requestFlags, IAdditionalTargetInformation info) {
+        SlicedRequests.checkpoint(); // a sliced request pauses here once its time this tick is used up
         this.info = info;
         this.parentNode = parentNode;
         this.requestType = requestType;
@@ -230,6 +232,76 @@ public class RequestTreeNode {
             promise.registerExtras(requestType);
         }
         return list;
+    }
+
+    /**
+     * For a request planned over several ticks: whether the plan still holds, checked on the server thread just before
+     * its orders are placed. Every pipe the plan uses must still be there, and every provider must still have what it
+     * promised, stock and extras of earlier crafts alike: each such promise is asked for again, in the order they were
+     * made, against a fresh tree so promises to this same plan count against each other the way they did while
+     * planning. Orders placed by other requests meanwhile are already taken off what the providers offer.
+     */
+    boolean stillProvidable() {
+        if (requestType.getRouter() == null || !requestType.getRouter().isValidCache()) {
+            staleDiag("the requesting pipe is gone");
+            return false;
+        }
+        RequestTree check = new RequestTree(requestType, null, EnumSet.noneOf(ActiveRequestType.class), info);
+        return stillProvidable(check);
+    }
+
+    private boolean stillProvidable(RequestTree check) {
+        for (IPromise promise : promises) {
+            IProvide provider = promise.getProvider();
+            if (provider == null || provider.getRouter() == null || !provider.getRouter().isValidCache()) {
+                staleDiag("the pipe promising " + promise.getAmount() + "x " + itemName(promise) + " is gone");
+                return false;
+            }
+            // Stock, and extras of crafts already ordered. Crafting promises and extras of this same plan's crafts
+            // don't
+            // depend on anything that can be taken in the meantime.
+            boolean fromOutside = promise.getType() == ResourceType.PROVIDER
+                    || (promise instanceof IExtraPromise && ((IExtraPromise) promise).isProvided());
+            if (!fromOutside) {
+                continue;
+            }
+            RequestTreeNode probe = new RequestTreeNode(
+                    requestType.copyForDisplayWith(promise.getAmount()),
+                    check,
+                    EnumSet.noneOf(ActiveRequestType.class),
+                    info);
+            provider.canProvide(probe, check, Collections.emptyList());
+            if (!probe.isDone()) {
+                staleDiag(
+                        (promise.getType() == ResourceType.PROVIDER ? "provider" : "crafter extras") + " at "
+                                + provider.getRouter().getLPPosition()
+                                + " promised "
+                                + promise.getAmount()
+                                + "x "
+                                + itemName(promise)
+                                + ", can give "
+                                + probe.getPromiseAmount()
+                                + " now");
+                return false;
+            }
+        }
+        for (RequestTreeNode subNode : subRequests) {
+            if (!subNode.stillProvidable(check)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** [Request DIAG]: why {@link #stillProvidable()} found the plan out of date. */
+    private static void staleDiag(String why) {
+        if (Configs.DEBUG_REQUESTS) {
+            SlicedRequests.diag("plan out of date: " + why);
+        }
+    }
+
+    private static String itemName(IPromise promise) {
+        return promise.getItemType() == null ? "?" : promise.getItemType().getFriendlyName();
     }
 
     protected void buildMissingMap(Map<IResource, Integer> missing) {

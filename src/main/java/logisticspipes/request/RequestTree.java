@@ -8,6 +8,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
+import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Blocks;
 import net.minecraft.item.Item;
 
@@ -221,6 +222,131 @@ public class RequestTree extends RequestTreeNode {
             }
             return false;
         }
+    }
+
+    /**
+     * {@link #request(List, IRequestItems, RequestLog, EnumSet, IAdditionalTargetInformation)} for a player, planned
+     * over several ticks ({@link SlicedRequests}).
+     */
+    public static void requestSliced(EntityPlayer player, List<ItemIdentifierStack> items, IRequestItems requester,
+            RequestLog log) {
+        SlicedRequests.submit(player, describe(items), () -> {
+            Map<IResource, Integer> messages = new HashMap<>();
+            RequestTree tree = new RequestTree(
+                    new ItemResource(
+                            new ItemIdentifierStack(
+                                    ItemIdentifier.get(Item.getItemFromBlock(Blocks.stone), 0, null),
+                                    0),
+                            requester),
+                    null,
+                    RequestTree.defaultRequestFlags,
+                    null);
+            boolean isDone = true;
+            for (ItemIdentifierStack stack : items) {
+                ItemIdentifier item = stack.getItem();
+                Integer count = messages.get(item);
+                if (count == null) {
+                    count = 0;
+                }
+                count += stack.getStackSize();
+                ItemResource req = new ItemResource(stack, requester);
+                messages.put(req, count);
+                RequestTree node = new RequestTree(req, tree, RequestTree.defaultRequestFlags, null);
+                isDone = isDone && node.isDone();
+            }
+            if (isDone) {
+                return () -> {
+                    if (!tree.stillProvidable()) {
+                        return SlicedRequests.Result.STALE;
+                    }
+                    LinkedLogisticsOrderList list = fullFillAsJob(tree, items, routerOf(requester), true);
+                    if (log != null) {
+                        log.handleSucessfullRequestOfList(RequestTreeNode.shrinkToList(messages), list);
+                    }
+                    return SlicedRequests.Result.PLACED;
+                };
+            }
+            SlicedRequests.DeferredLog missing = new SlicedRequests.DeferredLog();
+            tree.logFailedRequestTree(missing);
+            return () -> {
+                missing.replayTo(log);
+                return SlicedRequests.Result.MISSING;
+            };
+        });
+    }
+
+    /**
+     * {@link #request(ItemIdentifierStack, IRequestItems, RequestLog, IAdditionalTargetInformation)} for a player,
+     * planned over several ticks ({@link SlicedRequests}).
+     */
+    public static void requestSliced(EntityPlayer player, ItemIdentifierStack item, IRequestItems requester,
+            RequestLog log) {
+        SlicedRequests.submit(player, describe(item), () -> {
+            ItemResource req = new ItemResource(item, requester);
+            RequestTree tree = new RequestTree(req, null, RequestTree.defaultRequestFlags, null);
+            if (tree.isDone()) {
+                return () -> {
+                    if (!tree.stillProvidable()) {
+                        return SlicedRequests.Result.STALE;
+                    }
+                    LinkedLogisticsOrderList list = fullFillAsJob(
+                            tree,
+                            Collections.singletonList(item.clone()),
+                            routerOf(requester),
+                            false);
+                    if (log != null) {
+                        log.handleSucessfullRequestOf(req.copyForDisplayWith(item.getStackSize()), list);
+                    }
+                    return SlicedRequests.Result.PLACED;
+                };
+            }
+            tree.recurseFailedRequestTree();
+            SlicedRequests.DeferredLog missing = new SlicedRequests.DeferredLog();
+            tree.sendMissingMessage(missing);
+            return () -> {
+                missing.replayTo(log);
+                return SlicedRequests.Result.MISSING;
+            };
+        });
+    }
+
+    /**
+     * {@link #simulate} for a player, worked out over several ticks ({@link SlicedRequests}). Places nothing.
+     *
+     * @param then runs on the server thread once the log has been given the result
+     */
+    public static void simulateSliced(EntityPlayer player, ItemIdentifierStack item, IRequestItems requester,
+            RequestLog log, Runnable then) {
+        SlicedRequests.submit(player, "preview of " + describe(item), () -> {
+            RequestTree tree = new RequestTree(
+                    new ItemResource(item, requester),
+                    null,
+                    RequestTree.defaultRequestFlags,
+                    null);
+            if (!tree.isDone()) {
+                tree.recurseFailedRequestTree();
+            }
+            SlicedRequests.DeferredLog result = new SlicedRequests.DeferredLog();
+            tree.sendUsedMessage(result);
+            return () -> {
+                result.replayTo(log);
+                then.run();
+                return SlicedRequests.Result.SHOWN;
+            };
+        });
+    }
+
+    /** [Request DIAG]: what a request asked for. */
+    static String describe(ItemIdentifierStack item) {
+        return item.getStackSize() + "x " + item.getItem().getFriendlyName();
+    }
+
+    static String describe(List<ItemIdentifierStack> items) {
+        if (items.isEmpty()) {
+            return "nothing";
+        }
+        return items.size() == 1 ? describe(items.get(0))
+                : items.size() + " kinds of item, first " + describe(items.get(0));
     }
 
     public static int request(ItemIdentifierStack item, IRequestItems requester, RequestLog log, boolean acceptPartial,

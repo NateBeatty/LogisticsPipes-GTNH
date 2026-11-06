@@ -48,7 +48,7 @@ public class RequestHandler {
             player.addChatMessage(new ChatComponentTranslation("lp.misc.noenergy"));
             return;
         }
-        RequestTree.request(stack.clone(), pipe, new RequestLog() {
+        RequestLog log = new RequestLog() {
 
             @Override
             public void handleMissingItems(List<IResource> resources) {
@@ -71,13 +71,20 @@ public class RequestHandler {
 
             @Override
             public void handleSucessfullRequestOfList(List<IResource> resources, LinkedLogisticsOrderList parts) {}
-        }, null);
+        };
+        if (SlicedRequests.enabled()) {
+            RequestTree.requestSliced(player, stack.clone(), pipe, log);
+        } else {
+            SlicedRequests.timeUnsliced(
+                    RequestTree.describe(stack),
+                    () -> RequestTree.request(stack.clone(), pipe, log, null));
+        }
     }
 
     public static void simulate(final EntityPlayer player, final ItemIdentifierStack stack, CoreRoutedPipe pipe) {
         final List<IResource> usedList = new ArrayList<>();
         final List<IResource> missingList = new ArrayList<>();
-        RequestTree.simulate(stack.clone(), pipe, new RequestLog() {
+        RequestLog log = new RequestLog() {
 
             @Override
             public void handleMissingItems(List<IResource> resources) {
@@ -91,7 +98,23 @@ public class RequestHandler {
             public void handleSucessfullRequestOfList(List<IResource> resources, LinkedLogisticsOrderList parts) {
                 usedList.addAll(resources);
             }
-        });
+        };
+        if (SlicedRequests.enabled()) {
+            RequestTree.simulateSliced(
+                    player,
+                    stack.clone(),
+                    pipe,
+                    log,
+                    () -> sendComponents(player, usedList, missingList));
+            return;
+        }
+        SlicedRequests.timeUnsliced(
+                "preview of " + RequestTree.describe(stack),
+                () -> RequestTree.simulate(stack.clone(), pipe, log));
+        sendComponents(player, usedList, missingList);
+    }
+
+    private static void sendComponents(EntityPlayer player, List<IResource> usedList, List<IResource> missingList) {
         MainProxy.sendPacketToPlayer(
                 PacketHandler.getPacket(ComponentList.class).setUsed(usedList).setMissing(missingList),
                 player);
@@ -135,28 +158,7 @@ public class RequestHandler {
             player.addChatMessage(new ChatComponentTranslation("lp.misc.noenergy"));
             return;
         }
-        RequestTree.request(list, pipe, new RequestLog() {
-
-            @Override
-            public void handleMissingItems(List<IResource> resources) {
-                MainProxy.sendPacketToPlayer(
-                        PacketHandler.getPacket(MissingItems.class).setItems(resources).setFlag(true),
-                        player);
-            }
-
-            @Override
-            public void handleSucessfullRequestOf(IResource item, LinkedLogisticsOrderList parts) {}
-
-            @Override
-            public void handleSucessfullRequestOfList(List<IResource> resources, LinkedLogisticsOrderList parts) {
-                MainProxy.sendPacketToPlayer(
-                        PacketHandler.getPacket(MissingItems.class).setItems(resources).setFlag(false),
-                        player);
-                if (pipe instanceof IRequestWatcher) {
-                    ((IRequestWatcher) pipe).handleOrderList(null, parts);
-                }
-            }
-        }, RequestTree.defaultRequestFlags, null);
+        submitList(player, list, pipe);
     }
 
     public static void requestMacrolist(NBTTagCompound itemlist, final CoreRoutedPipe requester,
@@ -178,7 +180,13 @@ public class RequestHandler {
                     .makeStack(itemnbt.getInteger("amount"));
             transaction.add(stack);
         }
-        RequestTree.request(transaction, requester, new RequestLog() {
+        submitList(player, transaction, requester);
+    }
+
+    /** Requests several items as one job, reporting to the player the way the request table does. */
+    private static void submitList(final EntityPlayer player, final List<ItemIdentifierStack> list,
+            final CoreRoutedPipe pipe) {
+        RequestLog log = new RequestLog() {
 
             @Override
             public void handleMissingItems(List<IResource> resources) {
@@ -195,11 +203,18 @@ public class RequestHandler {
                 MainProxy.sendPacketToPlayer(
                         PacketHandler.getPacket(MissingItems.class).setItems(resources).setFlag(false),
                         player);
-                if (requester instanceof IRequestWatcher) {
-                    ((IRequestWatcher) requester).handleOrderList(null, parts);
+                if (pipe instanceof IRequestWatcher) {
+                    ((IRequestWatcher) pipe).handleOrderList(null, parts);
                 }
             }
-        }, RequestTree.defaultRequestFlags, null);
+        };
+        if (SlicedRequests.enabled()) {
+            RequestTree.requestSliced(player, list, pipe, log);
+        } else {
+            SlicedRequests.timeUnsliced(
+                    RequestTree.describe(list),
+                    () -> RequestTree.request(list, pipe, log, RequestTree.defaultRequestFlags, null));
+        }
     }
 
     public static Object[] computerRequest(final ItemIdentifierStack makeStack, final CoreRoutedPipe pipe,
