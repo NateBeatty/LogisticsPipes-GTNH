@@ -302,6 +302,11 @@ public abstract class CoreRoutedPipe extends CoreUnroutedPipe
     }
 
     private void notifyOfSend(ItemRoutingInformation routedItem) {
+        // The same routing information can be sent to this pipe twice: an Inventory System Connector takes the item out
+        // of its inventory and sends it on with the information it went in with. Adding it again counted the item twice
+        // as on its way here, and arrival only removes one, so the other stayed for good and used up the chest's room.
+        // Removing first keeps one entry, re-sorted by its current timeout.
+        _inTransitToMe.remove(routedItem);
         _inTransitToMe.add(routedItem);
         // LogisticsPipes.log.info("Sending: "+routedItem.getIDStack().getItem().getFriendlyName());
     }

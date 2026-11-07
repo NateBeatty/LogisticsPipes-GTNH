@@ -59,7 +59,9 @@ public class ModuleTrickleSupplier extends ModuleActiveSupplier {
     /** Something arrived, was lost or needs requesting again: check on the next tick, not in up to 5 seconds. */
     private boolean ready = false;
 
-    /** How long an item whose request failed is left alone before it is tried again; doubles each time, up to the max. */
+    /**
+     * How long an item whose request failed is left alone before it is tried again; doubles each time, up to the max.
+     */
     private static final long BACKOFF_BASE_TICKS = 20 * 10;
     private static final long BACKOFF_MAX_TICKS = 20 * 60;
 

@@ -1617,24 +1617,25 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     /**
      * Whether results go to the oldest request first instead of to the front of the order queue. Off here: a normal
-     * crafter serves its queue as it always has. The queue rotates whenever the front order can't be served yet -
-     * every check while the machine is still working, among others - so its front says nothing about age, and a
-     * request that keeps asking again (a Trickle Supplier) can win result after result over an older one.
+     * crafter serves its queue as it always has. The queue rotates whenever the front order can't be served yet - every
+     * check while the machine is still working, among others - so its front says nothing about age, and a request that
+     * keeps asking again (a Trickle Supplier) can win result after result over an older one.
      */
     protected boolean servesOldestFirst() {
         return false;
     }
 
     /**
-     * {@link #enabledUpdateEntity}'s result loop for {@link #servesOldestFirst}: each result goes to the oldest order that can
-     * take it right now. An order that can't (its destination is shut and no buffer has room) is passed over for this
-     * check but keeps its place, so it is first again as soon as it can take one. Nothing is moved while the machine
-     * has nothing ready. The orders served are the same as before - every crafting order in the chassis - only the
-     * order they are served in changed.
+     * {@link #enabledUpdateEntity}'s result loop for {@link #servesOldestFirst}: each result goes to the oldest order
+     * that can take it right now. An order that can't (its destination is shut and no buffer has room) is passed over
+     * for this check but keeps its place, so it is first again as soon as it can take one. Nothing is moved while the
+     * machine has nothing ready. The orders served are the same as before - every crafting order in the chassis - only
+     * the order they are served in changed.
      */
     private void extractOldestFirst(List<AdjacentTile> crafters, int itemsleft, int stacksleft) {
         LogisticsItemOrderManager orders = _service.getItemOrderManager();
-        // Passed over for the rest of this check: orders whose result has nowhere to go, items not ready in the machine.
+        // Passed over for the rest of this check: orders whose result has nowhere to go, items not ready in the
+        // machine.
         Set<LogisticsItemOrder> held = new HashSet<>();
         Set<ItemIdentifier> notReady = new HashSet<>();
         List<RouteSeen> routes = new ArrayList<>();
@@ -1741,8 +1742,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     private static boolean sameRouting(LogisticsItemOrder a, LogisticsItemOrder b) {
-        if (a.getDestination() != b.getDestination()
-                || !a.getResource().getItem().equals(b.getResource().getItem())) {
+        if (a.getDestination() != b.getDestination() || !a.getResource().getItem().equals(b.getResource().getItem())) {
             return false;
         }
         IAdditionalTargetInformation infoA = a.getInformation();
