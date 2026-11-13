@@ -468,7 +468,7 @@ public class PipeSmartSatellite extends FluidRoutedPipe
         IRoutedItem routedItem = SimpleServiceLocator.routedItemHelper
                 .createNewTravelItem(SimpleServiceLocator.logisticsFluidManager.getFluidContainer(liquid));
         Pair<Integer, Integer> replies = SimpleServiceLocator.logisticsFluidManager
-                .getBestReply(liquid, getRouter(), routedItem.getJamList());
+                .getBestReply(liquid, getRouter(), routedItem.getJamList(), true);
         routedItem.setDestination(replies.getValue1());
         routedItem.setTransportMode(TransportMode.Passive);
         this.queueRoutedItem(routedItem, machineSide.getOpposite());

@@ -407,6 +407,13 @@ gui.itemsink.import=Import
 gui.fluidsink.Yes=Yes
 gui.fluidsink.No=No
 gui.fluidsink.Defaultroute=Default route
+gui.fluidsink.Fallback=Catch all
+gui.fluidsink.mode.0=No
+gui.fluidsink.mode.0.tip=Only takes the fluids in its filter.
+gui.fluidsink.mode.1=Always
+gui.fluidsink.mode.1.tip=Default route: takes any fluid no filtered sink wants, from any sender, extractor pipes included.
+gui.fluidsink.mode.2=Overflow
+gui.fluidsink.mode.2.tip=Takes any fluid that would otherwise be stuck or voided: Smart Crafter cleanup, bounced and lost fluid. Extractor and insertion pipes never send here. Used only when no filtered or default-route sink has room.
 
 gui.crafting.Inputs=Inputs
 gui.crafting.Import=Import
@@ -599,6 +606,7 @@ gui.networkstatistics.crafting=Items being crafted
 gui.networkstatistics.gettasks=Acquire tasks
 gui.networkstatistics.jobs=Crafting requests
 gui.networkstatistics.crafters=Labeled crafters
+gui.networkstatistics.overflow=Fluids sent to overflow sinks
 gui.networkstatistics.add.alreadytracked=This item type is already tracked
 gui.networkstatistics.ItemDisplay=Page %s / %s
 

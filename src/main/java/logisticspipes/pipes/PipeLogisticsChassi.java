@@ -801,6 +801,27 @@ public abstract class PipeLogisticsChassi extends CoreRoutedPipe
         return fluidSinkAmount(stack, true);
     }
 
+    /**
+     * Room for the given fluid on this chassis as an overflow endpoint, forwarded to the first fluid-sink module (slot
+     * order) in overflow mode that can take it.
+     */
+    @Override
+    public int overflowSinkAmount(FluidStack stack) {
+        if (stack == null) {
+            return 0;
+        }
+        for (int i = 0; i < getChassiSize(); i++) {
+            LogisticsModule module = _module.getSubModule(i);
+            if (module instanceof IFluidSinkModule) {
+                int amount = ((IFluidSinkModule) module).overflowSinkAmount(stack);
+                if (amount > 0) {
+                    return amount;
+                }
+            }
+        }
+        return 0;
+    }
+
     private int fluidSinkAmount(FluidStack stack, boolean defaultPath) {
         if (stack == null) {
             return 0;

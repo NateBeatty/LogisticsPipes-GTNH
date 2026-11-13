@@ -309,10 +309,12 @@ public class LogisticsManager implements ILogisticsManager {
         Collections.sort(validDestinations);
         if (item.getItemIdentifierStack() != null
                 && item.getItemIdentifierStack().makeNormalStack().getItem() instanceof LogisticsFluidContainer) {
+            // A container already on the network has to land somewhere or be voided, so overflow sinks may take it.
             Pair<Integer, Integer> bestReply = SimpleServiceLocator.logisticsFluidManager.getBestReply(
                     SimpleServiceLocator.logisticsFluidManager.getFluidFromContainer(item.getItemIdentifierStack()),
                     sourceRouter,
-                    item.getJamList());
+                    item.getJamList(),
+                    true);
             if (bestReply.getValue1() != null && bestReply.getValue1() != 0) {
                 item.setDestination(bestReply.getValue1());
             }

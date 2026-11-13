@@ -301,7 +301,7 @@ public abstract class FluidRoutedPipe extends CoreRoutedPipe {
             IRoutedItem routedItem = SimpleServiceLocator.routedItemHelper
                     .createNewTravelItem(SimpleServiceLocator.logisticsFluidManager.getFluidContainer(liquid));
             Pair<Integer, Integer> replies = SimpleServiceLocator.logisticsFluidManager
-                    .getBestReply(liquid, getRouter(), routedItem.getJamList());
+                    .getBestReply(liquid, getRouter(), routedItem.getJamList(), true);
             int dest = replies.getValue1();
             routedItem.setDestination(dest);
             routedItem.setTransportMode(TransportMode.Passive);

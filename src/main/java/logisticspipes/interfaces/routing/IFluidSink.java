@@ -17,4 +17,17 @@ public interface IFluidSink {
     default int defaultPathSinkAmount(FluidStack stack) {
         return 0;
     }
+
+    /**
+     * Room available on this sink as an <em>overflow</em> endpoint: the last place fluid goes when no filtered or
+     * default-path sink has room. Only senders that clean up or recover fluid ask for it (Smart Crafter sweeps, bounced or
+     * lost containers); extractor and insertion pipes never do, so they don't pump into it.
+     *
+     * <p>
+     * Default returns 0, so the third routing pass is inert until a sink opts in.
+     * </p>
+     */
+    default int overflowSinkAmount(FluidStack stack) {
+        return 0;
+    }
 }

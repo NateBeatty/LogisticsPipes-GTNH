@@ -1,5 +1,8 @@
 package logisticspipes.gui.modules;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.util.ResourceLocation;
@@ -41,29 +44,34 @@ public class GuiFluidSink extends ModuleBaseGui {
         ySize = 142;
     }
 
+    // Fallback-mode button, relative to the GUI's left/top edge.
+    private static final int BUTTON_X = 112;
+    private static final int BUTTON_Y = 37;
+    private static final int BUTTON_W = 56;
+    private static final int BUTTON_H = 20;
+
     @Override
     public void initGui() {
         super.initGui();
-        // Default-route toggle:
+        // Fallback mode: off -> default route -> overflow.
         buttonList.clear();
         buttonList.add(
                 new GuiStringHandlerButton(
                         0,
-                        width / 2 + 50,
-                        height / 2 - 34,
-                        30,
-                        20,
-                        () -> StringUtils
-                                .translate(GuiFluidSink.PREFIX + (_fluidSink.isDefaultRoute() ? "Yes" : "No"))));
+                        guiLeft + BUTTON_X,
+                        guiTop + BUTTON_Y,
+                        BUTTON_W,
+                        BUTTON_H,
+                        () -> StringUtils.translate(GuiFluidSink.PREFIX + "mode." + _fluidSink.getMode())));
     }
 
     @Override
     protected void actionPerformed(GuiButton guibutton) {
         if (guibutton.id == 0) {
-            _fluidSink.setDefaultRoute(!_fluidSink.isDefaultRoute());
+            _fluidSink.setMode(_fluidSink.nextMode());
             MainProxy.sendPacketToServer(
-                    PacketHandler.getPacket(FluidSinkDefaultPacket.class).setFlag(_fluidSink.isDefaultRoute())
-                            .setModulePos(_fluidSink));
+                    PacketHandler.getPacket(FluidSinkDefaultPacket.class).setMode(_fluidSink.getMode())
+                            .setFlag(_fluidSink.isDefaultRoute()).setModulePos(_fluidSink));
         }
     }
 
@@ -72,7 +80,26 @@ public class GuiFluidSink extends ModuleBaseGui {
         mc.fontRenderer.drawString(_fluidSink.getFilterInventory().getInventoryName(), 8, 6, 0x404040);
         mc.fontRenderer
                 .drawString(StringUtils.translate("gui.logisticspipes.inventory.title"), 8, ySize - 92, 0x404040);
-        mc.fontRenderer.drawString(StringUtils.translate(GuiFluidSink.PREFIX + "Defaultroute") + ":", 65, 45, 0x404040);
+        String label = StringUtils.translate(GuiFluidSink.PREFIX + "Fallback") + ":";
+        mc.fontRenderer.drawString(
+                label,
+                BUTTON_X - 4 - mc.fontRenderer.getStringWidth(label),
+                BUTTON_Y + (BUTTON_H - 8) / 2,
+                0x404040);
+
+        int mouseX = par1 - guiLeft;
+        int mouseY = par2 - guiTop;
+        if (mouseX >= BUTTON_X && mouseX < BUTTON_X + BUTTON_W
+                && mouseY >= BUTTON_Y
+                && mouseY < BUTTON_Y + BUTTON_H) {
+            List<String> lines = new ArrayList<>();
+            lines.add(StringUtils.translate(GuiFluidSink.PREFIX + "mode." + _fluidSink.getMode()));
+            lines.addAll(
+                    mc.fontRenderer.listFormattedStringToWidth(
+                            "§7" + StringUtils.translate(GuiFluidSink.PREFIX + "mode." + _fluidSink.getMode() + ".tip"),
+                            180));
+            func_146283_a(lines, mouseX, mouseY);
+        }
     }
 
     @Override

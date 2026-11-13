@@ -26,4 +26,12 @@ public interface IFluidSinkModule {
      * @return the amount (0 to {@code stack.amount}) this module can take right now
      */
     int sinkAmount(FluidStack stack, boolean defaultPath);
+
+    /**
+     * How much of {@code stack} this module can take as an overflow endpoint (see
+     * {@link IFluidSink#overflowSinkAmount}). Default 0: not an overflow endpoint.
+     */
+    default int overflowSinkAmount(FluidStack stack) {
+        return 0;
+    }
 }

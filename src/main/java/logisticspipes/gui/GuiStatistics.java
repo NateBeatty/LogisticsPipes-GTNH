@@ -34,14 +34,17 @@ import logisticspipes.gui.popup.GuiConfirmPopup;
 import logisticspipes.gui.popup.GuiTagPicker;
 import logisticspipes.network.PacketHandler;
 import logisticspipes.network.packets.block.CancelCraftingJobPacket;
+import logisticspipes.network.packets.block.ClearOverflowFluids;
 import logisticspipes.network.packets.block.RemoveAmoundTask;
 import logisticspipes.network.packets.block.RequestAmountTaskSubGui;
 import logisticspipes.network.packets.block.RequestCraftingJobs;
 import logisticspipes.network.packets.block.RequestLabeledCrafters;
+import logisticspipes.network.packets.block.RequestOverflowFluids;
 import logisticspipes.network.packets.block.RequestRunningCraftingTasks;
 import logisticspipes.proxy.MainProxy;
 import logisticspipes.renderer.LocateHighlighter;
 import logisticspipes.request.LabeledCrafters;
+import logisticspipes.request.OverflowFluids;
 import logisticspipes.routing.order.CraftingJob;
 import logisticspipes.routing.order.CraftingJobInfo;
 import logisticspipes.routing.order.CraftingJobs;
@@ -59,7 +62,7 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
 
     private final String PREFIX = "gui.networkstatistics.";
 
-    private final int TAB_COUNT = 4;
+    private final int TAB_COUNT = 5;
     private int current_Tab;
 
     private final List<GuiButton> TAB_BUTTON_1 = new ArrayList<>();
@@ -218,6 +221,23 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
     /** Per table, by dimension and position; client-side only, so it lasts until the game is closed. */
     private static final Map<String, SavedCrafterSearch> SAVED_SEARCHES = new HashMap<>();
 
+    /* Fifth tab: fluids that went into overflow Fluid Sinks */
+
+    private static final int OVERFLOW_TAB = 4;
+    private static final int OVERFLOW_ROWS = 8;
+    private static final int OVERFLOW_ROW_HEIGHT = 18;
+    private static final int OVERFLOW_TOP = 40;
+    /** How often the overflow list is refreshed while the tab is open, in client ticks. */
+    private static final int OVERFLOW_REFRESH_TICKS = 40;
+    private static final ItemStack OVERFLOW_TAB_ICON = new ItemStack(Items.bucket);
+
+    private List<OverflowFluids.Entry> overflow = new ArrayList<>();
+    private int overflowPage = 0;
+    private int overflowRefreshIn = 0;
+    private final GuiButton[] overflowRemoveButtons = new GuiButton[OVERFLOW_ROWS];
+    private GuiButton overflowClearButton;
+    private final List<GuiButton> TAB_BUTTON_5 = new ArrayList<>();
+
     private final LogisticsStatisticsTileEntity tile;
 
     private ItemDisplay itemDisplay_1;
@@ -292,6 +312,22 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                 crafterPage = saved.page;
             }
         }
+        TAB_BUTTON_5.clear();
+        overflowClearButton = addButton(new SmallGuiButton(40, guiLeft + 10, guiTop + 205, 50, 10, "Clear all"));
+        TAB_BUTTON_5.add(overflowClearButton);
+        TAB_BUTTON_5.add(addButton(new SmallGuiButton(41, guiLeft + xSize - 60, guiTop + 205, 10, 10, "<")));
+        TAB_BUTTON_5.add(addButton(new SmallGuiButton(42, guiLeft + xSize - 20, guiTop + 205, 10, 10, ">")));
+        for (int i = 0; i < OVERFLOW_ROWS; i++) {
+            overflowRemoveButtons[i] = addButton(
+                    new SmallGuiButton(
+                            50 + i,
+                            guiLeft + xSize - 22,
+                            guiTop + OVERFLOW_TOP + i * OVERFLOW_ROW_HEIGHT + (OVERFLOW_ROW_HEIGHT - 10) / 2,
+                            10,
+                            10,
+                            "x"));
+        }
+
         updateToggleLabels();
         crafterSearch = new GuiTextField(fontRendererObj, guiLeft + 11, guiTop + 40, xSize - 82, 12);
         crafterSearch.setMaxStringLength(200);
@@ -426,7 +462,145 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             crafterPage = 0;
             updateToggleLabels();
             filterCrafters();
+        } else if (p_146284_1_.id == 40) {
+            setSubGui(
+                    new GuiConfirmPopup(
+                            "Clear",
+                            () -> clearOverflow(null),
+                            "Clear the whole overflow list?",
+                            "Only the list is cleared; nothing in",
+                            "the overflow tanks is touched."));
+        } else if (p_146284_1_.id == 41 || p_146284_1_.id == 42) {
+            turnOverflowPage(p_146284_1_.id == 42 ? 1 : -1);
+        } else if (p_146284_1_.id >= 50 && p_146284_1_.id < 50 + OVERFLOW_ROWS) {
+            int index = overflowPage * OVERFLOW_ROWS + (p_146284_1_.id - 50);
+            if (index < overflow.size()) {
+                clearOverflow(overflow.get(index));
+            }
         }
+    }
+
+    /* Overflow fluids tab */
+
+    public void handleOverflowList(List<OverflowFluids.Entry> entries) {
+        overflow = entries;
+    }
+
+    /** Clears one fluid from the list on the server and here, or every fluid when {@code entry} is null. */
+    private void clearOverflow(OverflowFluids.Entry entry) {
+        MainProxy.sendPacketToServer(
+                PacketHandler.getPacket(ClearOverflowFluids.class).setFluid(entry == null ? null : entry.fluid)
+                        .setTilePos(tile));
+        if (entry == null) {
+            overflow = new ArrayList<>();
+        } else {
+            List<OverflowFluids.Entry> kept = new ArrayList<>(overflow);
+            kept.remove(entry);
+            overflow = kept;
+        }
+        overflowRefreshIn = OVERFLOW_REFRESH_TICKS;
+    }
+
+    private void turnOverflowPage(int by) {
+        int pages = Math.max(1, (overflow.size() + OVERFLOW_ROWS - 1) / OVERFLOW_ROWS);
+        overflowPage = Math.floorMod(overflowPage + by, pages);
+    }
+
+    /** Width of an overflow row, leaving room on the right for its remove button. */
+    private int overflowRowWidth() {
+        return xSize - 34;
+    }
+
+    /** The overflow entry under the mouse, or null. Excludes the remove buttons. */
+    private OverflowFluids.Entry overflowRowAt(int mouseX, int mouseY) {
+        int x = guiLeft + 10;
+        int top = guiTop + OVERFLOW_TOP;
+        if (mouseX < x || mouseX >= x + overflowRowWidth()
+                || mouseY < top
+                || mouseY >= top + OVERFLOW_ROWS * OVERFLOW_ROW_HEIGHT) {
+            return null;
+        }
+        int index = overflowPage * OVERFLOW_ROWS + (mouseY - top) / OVERFLOW_ROW_HEIGHT;
+        return index < overflow.size() ? overflow.get(index) : null;
+    }
+
+    private void drawOverflowTab(int mouseX, int mouseY) {
+        int x = guiLeft + 10;
+        int top = guiTop + OVERFLOW_TOP;
+        if (overflow.isEmpty()) {
+            String empty = "No fluid has gone to an overflow sink.";
+            fontRendererObj.drawString(empty, xCenter - fontRendererObj.getStringWidth(empty) / 2, top + 20, 0x404040);
+            return;
+        }
+        int pages = Math.max(1, (overflow.size() + OVERFLOW_ROWS - 1) / OVERFLOW_ROWS);
+        overflowPage = Math.min(overflowPage, pages - 1);
+        OverflowFluids.Entry hovered = hasSubGui() ? null : overflowRowAt(mouseX, mouseY);
+        int width = overflowRowWidth();
+        for (int i = 0; i < OVERFLOW_ROWS; i++) {
+            int index = overflowPage * OVERFLOW_ROWS + i;
+            if (index >= overflow.size()) {
+                break;
+            }
+            OverflowFluids.Entry e = overflow.get(index);
+            int y = top + i * OVERFLOW_ROW_HEIGHT;
+            if (e == hovered) {
+                drawRect(x, y, x + width, y + OVERFLOW_ROW_HEIGHT - 1, Color.LIGHTER_GREY);
+            }
+            renderItem(e.fluid.makeStack(1), x + 1, y + 1);
+
+            String amount = StringUtils.getFormattedFluidAmount(e.litres);
+            int amountWidth = fontRendererObj.getStringWidth(amount);
+            fontRendererObj.drawString(amount, x + width - 2 - amountWidth, y, 0xAA0000);
+            fontRendererObj.drawString(
+                    StringUtils.getWithMaxWidth(e.fluid.getFriendlyName(), width - 28 - amountWidth, fontRendererObj),
+                    x + 20,
+                    y,
+                    0x404040);
+
+            String line = "last " + age(e.ticksAgo) + " ago | " + e.deliveries + (e.deliveries == 1 ? " delivery" : " deliveries");
+            if (e.sinks > 1) {
+                line += " | " + e.sinks + " sinks";
+            }
+            fontRendererObj.drawString(
+                    StringUtils.getWithMaxWidth(line, width - 22, fontRendererObj),
+                    x + 20,
+                    y + 9,
+                    0x808080);
+        }
+        drawPageNumber(overflowPage, pages);
+    }
+
+    /** Drawn in the foreground layer, so relative to the GUI. */
+    private void drawOverflowTooltip(int mouseX, int mouseY) {
+        OverflowFluids.Entry e = hasSubGui() ? null : overflowRowAt(mouseX, mouseY);
+        if (e == null) {
+            return;
+        }
+        List<String> lines = new ArrayList<>();
+        lines.add(e.fluid.getFriendlyName());
+        lines.add("§7" + StringUtils.getFormattedFluidAmount(e.litres) + " (" + e.litres + " L) in "
+                + e.deliveries
+                + (e.deliveries == 1 ? " delivery" : " deliveries"));
+        lines.add("§7Last " + age(e.ticksAgo) + " ago, at " + e.x + ", " + e.y + ", " + e.z + " (dim " + e.dimension + ")");
+        if (e.sinks > 1) {
+            lines.add("§7Went to " + e.sinks + " overflow sinks");
+        }
+        lines.add("§7Give it a real tank to stop it going here.");
+        lines.add("§eClick to locate the last sink");
+        func_146283_a(lines, mouseX - guiLeft, mouseY - guiTop);
+    }
+
+    private void locateOverflowSink(OverflowFluids.Entry e) {
+        LocateHighlighter.INSTANCE.clear();
+        LocateHighlighter.INSTANCE.add(e.x, e.y, e.z, LocateHighlighter.PIPE_COLOR);
+        LocateHighlighter.INSTANCE.start(e.dimension);
+        String where = e.x + ", " + e.y + ", " + e.z;
+        if (mc.theWorld != null && mc.theWorld.provider.dimensionId != e.dimension) {
+            where += " in dimension " + e.dimension;
+        }
+        mc.thePlayer.addChatMessage(
+                new ChatComponentText(
+                        "Highlighting the overflow sink that took " + e.fluid.getFriendlyName() + " at " + where + "."));
     }
 
     private String tableKey() {
@@ -723,6 +897,13 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             if (--crafterRefreshIn <= 0) {
                 crafterRefreshIn = CRAFTER_REFRESH_TICKS;
                 MainProxy.sendPacketToServer(PacketHandler.getPacket(RequestLabeledCrafters.class).setTilePos(tile));
+            }
+            return;
+        }
+        if (current_Tab == OVERFLOW_TAB) {
+            if (--overflowRefreshIn <= 0) {
+                overflowRefreshIn = OVERFLOW_REFRESH_TICKS;
+                MainProxy.sendPacketToServer(PacketHandler.getPacket(RequestOverflowFluids.class).setTilePos(tile));
             }
             return;
         }
@@ -1219,6 +1400,13 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                 CRAFTERS_TAB_ICON,
                 guiLeft + 81,
                 guiTop + 3);
+        // Fifth Tab
+        GuiScreen.itemRender.renderItemAndEffectIntoGUI(
+                fontRendererObj,
+                getMC().renderEngine,
+                OVERFLOW_TAB_ICON,
+                guiLeft + 106,
+                guiTop + 3);
         GL11.glDisable(GL11.GL_LIGHTING);
         GL11.glDisable(GL11.GL_DEPTH_TEST);
         GuiScreen.itemRender.zLevel = 0.0F;
@@ -1389,6 +1577,8 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             drawJobsTab(mouse_x, mouse_y);
         } else if (current_Tab == CRAFTERS_TAB) {
             drawCraftersTab(mouse_x, mouse_y);
+        } else if (current_Tab == OVERFLOW_TAB) {
+            drawOverflowTab(mouse_x, mouse_y);
         }
 
         super.drawGuiContainerBackgroundLayer(f, mouse_x, mouse_y);
@@ -1435,6 +1625,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             } else {
                 super.keyTyped(c, i);
             }
+        } else if (current_Tab == OVERFLOW_TAB) {
+            if (i == 201) { // PgUp
+                turnOverflowPage(-1);
+            } else if (i == 209) { // PgDn
+                turnOverflowPage(1);
+            } else {
+                super.keyTyped(c, i);
+            }
         } else {
             super.keyTyped(c, i);
         }
@@ -1450,6 +1648,9 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
             }
             if (tab == CRAFTERS_TAB && current_Tab != CRAFTERS_TAB) {
                 crafterRefreshIn = 0;
+            }
+            if (tab == OVERFLOW_TAB && current_Tab != OVERFLOW_TAB) {
+                overflowRefreshIn = 0;
             }
             current_Tab = tab;
         } else {
@@ -1475,6 +1676,11 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                 CrafterRow row = par3 == 0 && !hasSubGui() ? crafterRowAt(par1, par2) : null;
                 if (row != null) {
                     locate(row);
+                }
+            } else if (current_Tab == OVERFLOW_TAB && par3 == 0 && !hasSubGui()) {
+                OverflowFluids.Entry entry = overflowRowAt(par1, par2);
+                if (entry != null) {
+                    locateOverflowSink(entry);
                 }
             }
             super.mouseClicked(par1, par2, par3);
@@ -1524,6 +1730,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
                     Color.getValue(Color.DARKER_GREY),
                     false);
             drawCrafterTooltip(par1, par2);
+        } else if (current_Tab == OVERFLOW_TAB) {
+            mc.fontRenderer.drawString(
+                    StringUtils.translate(PREFIX + "overflow"),
+                    10,
+                    28,
+                    Color.getValue(Color.DARKER_GREY),
+                    false);
+            drawOverflowTooltip(par1, par2);
         }
     }
 
@@ -1549,6 +1763,14 @@ public class GuiStatistics extends LogisticsBaseGuiScreen {
         }
         for (GuiButton button : TAB_BUTTON_4) {
             button.visible = current_Tab == CRAFTERS_TAB;
+        }
+        boolean overflowTab = current_Tab == OVERFLOW_TAB;
+        for (GuiButton button : TAB_BUTTON_5) {
+            button.visible = overflowTab;
+        }
+        overflowClearButton.enabled = !overflow.isEmpty();
+        for (int i = 0; i < OVERFLOW_ROWS; i++) {
+            overflowRemoveButtons[i].visible = overflowTab && overflowPage * OVERFLOW_ROWS + i < overflow.size();
         }
         boolean jobsTab = current_Tab == JOBS_TAB;
         boolean listView = jobsTab && detailJobId == -1;

@@ -22,6 +22,11 @@ public class FluidSinkSlot extends ModuleCoordinatesGuiProvider {
     @Setter
     private boolean isDefaultRoute;
 
+    /** {@code ModuleFluidSink.MODE_*}. Sent after the old flag so a client without it reads the flag and stops. */
+    @Getter
+    @Setter
+    private int mode = -1;
+
     public FluidSinkSlot(int id) {
         super(id);
     }
@@ -30,12 +35,14 @@ public class FluidSinkSlot extends ModuleCoordinatesGuiProvider {
     public void writeData(LPDataOutputStream data) throws IOException {
         super.writeData(data);
         data.writeBoolean(isDefaultRoute);
+        data.writeByte(mode);
     }
 
     @Override
     public void readData(LPDataInputStream data) throws IOException {
         super.readData(data);
         isDefaultRoute = data.readBoolean();
+        mode = data.available() > 0 ? data.readByte() : -1;
     }
 
     @Override
@@ -44,7 +51,11 @@ public class FluidSinkSlot extends ModuleCoordinatesGuiProvider {
         if (module == null) {
             return null;
         }
-        module.setDefaultRoute(isDefaultRoute);
+        if (mode >= 0) {
+            module.setMode(mode);
+        } else {
+            module.setDefaultRoute(isDefaultRoute);
+        }
         return new GuiFluidSink(player.inventory, module);
     }
 

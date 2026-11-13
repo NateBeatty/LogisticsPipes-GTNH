@@ -1372,7 +1372,7 @@ public class ModuleSmartCrafter extends ModuleCrafter
         // a
         // 1-mB probe reports it can take only 1 and would strand the rest of the set's excess in the machine.
         Pair<Integer, Integer> reply = SimpleServiceLocator.logisticsFluidManager
-                .getBestReply(fluid.makeFluidStack(left), senderRouter, new ArrayList<Integer>());
+                .getBestReply(fluid.makeFluidStack(left), senderRouter, new ArrayList<Integer>(), true);
         if (reply.getValue1() == 0) {
             warnNoFluidSink(fluid);
             return 0;

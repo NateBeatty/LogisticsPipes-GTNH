@@ -32,11 +32,15 @@ import logisticspipes.utils.tuples.Pair;
 public class LogisticsFluidManager implements ILogisticsFluidManager {
 
     @Override
-    public Pair<Integer, Integer> getBestReply(FluidStack stack, IRouter sourceRouter, List<Integer> jamList) {
+    public Pair<Integer, Integer> getBestReply(FluidStack stack, IRouter sourceRouter, List<Integer> jamList,
+            boolean allowOverflow) {
         // Pass 2 fallback: the nearest default-path sink with room, consulted only if pass 1 finds nothing.
         // Candidates are cost-ordered (nearest first), so the first one seen is the nearest.
         int defaultPathDestination = 0;
         int defaultPathAmount = 0;
+        // Pass 3 fallback (only when asked): the nearest overflow sink with room, if passes 1 and 2 find nothing.
+        int overflowDestination = 0;
+        int overflowAmount = 0;
 
         for (ExitRoute candidateRouter : sourceRouter.getIRoutersByCost()) {
             if (!candidateRouter.containsFlag(PipeRoutingConnectionType.canRouteTo)) {
@@ -74,9 +78,22 @@ public class LogisticsFluidManager implements ILogisticsFluidManager {
                     defaultPathAmount = defaultAmount;
                 }
             }
+
+            // Pass 3 (overflow): remember the nearest overflow sink with room. Skipped unless the caller asked, and
+            // once a default-path sink was found, since that one wins anyway.
+            if (allowOverflow && overflowDestination == 0 && defaultPathDestination == 0) {
+                int amountOverflow = sink.overflowSinkAmount(stack);
+                if (amountOverflow > 0) {
+                    overflowDestination = candidateRouter.destination.getSimpleID();
+                    overflowAmount = amountOverflow;
+                }
+            }
         }
         if (defaultPathDestination != 0) {
             return new Pair<>(defaultPathDestination, defaultPathAmount);
+        }
+        if (overflowDestination != 0) {
+            return new Pair<>(overflowDestination, overflowAmount);
         }
         return new Pair<>(0, 0);
     }
