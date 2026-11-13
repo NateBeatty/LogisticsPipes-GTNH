@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 import logisticspipes.LogisticsPipes;
 import logisticspipes.config.Configs;
@@ -100,6 +101,20 @@ public class CraftingJob {
 
     public boolean isDone() {
         return open <= 0;
+    }
+
+    /**
+     * Whether an order of this job that keeps it open, and still has something left to send, passes {@code test}. Walks
+     * every order the job placed, so callers asking about many orders of one job should keep the answer.
+     */
+    public boolean hasOpenOrder(Predicate<LogisticsOrder> test) {
+        for (Placed placed : orders) {
+            LogisticsOrder order = placed.order;
+            if (!order.isFinished() && order.getAmount() > 0 && keepsJobOpen(order) && test.test(order)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void add(LogisticsOrderManager<?, ?> manager, LogisticsOrder order) {

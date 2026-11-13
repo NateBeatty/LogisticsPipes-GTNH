@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -340,6 +341,16 @@ public class ModuleSmartCrafter extends ModuleCrafter
     @Override
     protected boolean servesOldestFirst() {
         return true;
+    }
+
+    /**
+     * Item and fluid ingredients alike carry this module in their target information (see
+     * {@link #ingredientInformation}), on whichever provider or crafter holds the order, and whether they go to this
+     * module's machine or a Smart Satellite's.
+     */
+    @Override
+    protected boolean jobOwesIngredients(CraftingJob job) {
+        return job.hasOpenOrder(o -> crafterOf(o.getInformation()) == this);
     }
 
     @Override
@@ -2751,6 +2762,9 @@ public class ModuleSmartCrafter extends ModuleCrafter
             ModuleSmartCrafter.AllCrafters.add(this);
             registered = true;
         }
+        if (Configs.DEBUG_RESULT_HANDOUT && _service.isNthTick(200)) {
+            handoutWaitingDiag(); // TEMP [Handout DIAG]
+        }
         if (gateDirty || _service.isNthTick(SAFETY_NET_TICKS)) {
             updateGate();
         }
@@ -3072,9 +3086,169 @@ public class ModuleSmartCrafter extends ModuleCrafter
     @Override
     protected void onResultExtracted(ItemIdentifier item, int amount) {
         ModuleSmartCrafter owner = resultOwner(item);
+        handoutCreditedTo = owner; // TEMP [Handout DIAG]
         if (owner != null) {
             owner.creditSets(owner.outputIndexFor(item), amount);
         }
+    }
+
+    /*
+     * TEMP [Handout DIAG], with the resultHandout debug config: which order each result goes to, and why a recipe with
+     * open orders isn't moving. For two recipes of one item in one chassis, whose orders share a queue: a result made
+     * by one recipe can fill the other recipe's order, leaving its own order waiting on ingredients already used.
+     */
+
+    /** The recipe the last extracted result was credited to, for the HANDOUT line that follows it. */
+    private ModuleSmartCrafter handoutCreditedTo;
+    private long handoutWaitingLogged = 0;
+
+    @Override
+    protected Object handoutDiagSnapshot(ItemIdentifier item) {
+        if (!Configs.DEBUG_RESULT_HANDOUT || _service == null) {
+            return null;
+        }
+        Map<LogisticsItemOrder, Integer> amounts = new LinkedHashMap<>();
+        for (LogisticsItemOrder order : _service.getItemOrderManager()) {
+            if ((order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA)
+                    && order.getResource().matches(item, IResource.MatchSettings.NORMAL)) {
+                amounts.put(order, order.getAmount());
+            }
+        }
+        return amounts;
+    }
+
+    @Override
+    protected void handoutDiag(Object before, ItemIdentifier item, int amount, LogisticsItemOrder firstPick,
+            LogisticsItemOrder target, ResultRoute route, boolean targetReady) {
+        if (!Configs.DEBUG_RESULT_HANDOUT || _service == null || getWorld() == null) {
+            return;
+        }
+        StringBuilder line = new StringBuilder("[Handout DIAG] ").append(getX()).append(",").append(getY())
+                .append(",").append(getZ()).append(" HANDOUT by ").append(diagModuleName(this)).append(": ")
+                .append(amount).append("x").append(diagItemName(item)).append(" made by (credited to) ")
+                .append(diagModuleName(handoutCreditedTo));
+        if (target == null) {
+            line.append(" | UNADDRESSED, first pick was ").append(diagOrder(firstPick));
+        } else {
+            line.append(" | to ").append(diagOrder(target)).append(" route=").append(route).append(" ready=")
+                    .append(targetReady);
+            if (target != firstPick) {
+                line.append(" | REDIRECTED from ").append(diagOrder(firstPick));
+            }
+            if (handoutCreditedTo != null && target.getMaker() != null && target.getMaker() != handoutCreditedTo) {
+                line.append(" | MAKER MISMATCH");
+            }
+        }
+        if (before instanceof Map) {
+            // Which orders the send was really counted against: the order manager may count it against older ones.
+            StringBuilder counted = new StringBuilder();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) before).entrySet()) {
+                LogisticsItemOrder order = (LogisticsItemOrder) entry.getKey();
+                int was = (Integer) entry.getValue();
+                int now = order.isFinished() ? 0 : order.getAmount();
+                if (now != was) {
+                    counted.append(counted.length() == 0 ? "" : ", ").append(diagJob(order)).append(" ")
+                            .append(was).append("->").append(now);
+                }
+            }
+            line.append(" | counted against: ").append(counted.length() == 0 ? "nothing" : counted);
+        }
+        StringBuilder open = new StringBuilder();
+        for (LogisticsItemOrder order : _service.getItemOrderManager()) {
+            if ((order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA)
+                    && !order.isFinished()
+                    && order.getAmount() > 0
+                    && order.getResource().matches(item, IResource.MatchSettings.NORMAL)) {
+                open.append(open.length() == 0 ? "" : "; ").append(diagOrder(order));
+            }
+        }
+        line.append(" | still open: ").append(open.length() == 0 ? "none" : open);
+        LogisticsPipes.log.info(line.toString());
+    }
+
+    /**
+     * TEMP [Handout DIAG]: about every 10 seconds, for a recipe with open orders of its own and nothing happening for
+     * that long: its orders, whether each one's request still owes this recipe ingredients, and the gate's state.
+     */
+    private void handoutWaitingDiag() {
+        if (!Configs.DEBUG_RESULT_HANDOUT || _service == null || getWorld() == null
+                || now() - handoutWaitingLogged < 200
+                || now() - lastProgressTick < 200) {
+            return;
+        }
+        StringBuilder own = new StringBuilder();
+        int ownTotal = 0;
+        int chassisTotal = 0;
+        for (int i = 0; i < OUTPUT_SLOTS; i++) {
+            ItemIdentifierStack output = getOutput(i);
+            if (output == null || outputRole[i] != OutputRole.PRODUCT) {
+                continue;
+            }
+            ownTotal += outstandingResults(output);
+            chassisTotal += ordersWaitingFor(output);
+            for (LogisticsItemOrder order : _service.getItemOrderManager()) {
+                if ((order.getType() == ResourceType.CRAFTING || order.getType() == ResourceType.EXTRA)
+                        && (order.getMaker() == null || order.getMaker() == this)
+                        && order.getResource().matches(output.getItem(), IResource.MatchSettings.NORMAL)) {
+                    CraftingJob job = order.getJob();
+                    own.append(own.length() == 0 ? "" : "; ").append(diagOrder(order)).append(" owesThis=")
+                            .append(job == null ? "-" : String.valueOf(jobOwesIngredients(job)));
+                }
+            }
+        }
+        if (ownTotal <= 0) {
+            return;
+        }
+        handoutWaitingLogged = now();
+        int covered = setsCoveredByIntermediates();
+        StringBuilder line = new StringBuilder("[Handout DIAG] ").append(getX()).append(",").append(getY())
+                .append(",").append(getZ()).append(" WAITING ").append(diagModuleName(this)).append(" idle ")
+                .append((now() - lastProgressTick) / 20).append("s | ownOrders=").append(ownTotal)
+                .append(" chassisOrders=").append(chassisTotal).append(" sets=").append(setsReleased)
+                .append(" claimed=").append(holdsClaim()).append(" awaitingMachines=").append(awaitingMachines)
+                .append(" coveredByIntermediates=")
+                .append(covered == Integer.MAX_VALUE ? "no intermediates" : String.valueOf(covered));
+        for (int slot = 0; slot < INGREDIENT_SLOTS; slot++) {
+            if (!isGatedSlot(slot)) {
+                continue;
+            }
+            ItemIdentifierStack material = getMaterials(slot);
+            line.append(" | s").append(slot).append(" ").append(material.getStackSize()).append("x")
+                    .append(diagItemName(material.getItem())).append(" allow=").append(allowance[slot])
+                    .append(" inFlight=").append(inFlight[slot]).append(" buffered=").append(bufferedFor(slot))
+                    .append(" inMachine=").append(machineStock(material.getItem()));
+        }
+        line.append(" | own orders: ").append(own);
+        LogisticsPipes.log.info(line.toString());
+    }
+
+    /** TEMP [Handout DIAG]: a module as m{slot}[recipe] at its chassis. */
+    private static String diagModuleName(ModuleCrafter module) {
+        if (module == null) {
+            return "nobody";
+        }
+        String name = "m" + module.getPositionInt();
+        if (module instanceof ModuleSmartCrafter) {
+            name += "[" + ((ModuleSmartCrafter) module).diagRecipeName() + "]";
+        }
+        return name;
+    }
+
+    /** TEMP [Handout DIAG]: an order's job, recipe, amount and destination. */
+    private static String diagOrder(LogisticsItemOrder order) {
+        if (order == null) {
+            return "none";
+        }
+        return diagJob(order) + " " + order.getType() + " " + order.getAmount() + "x maker=" + diagModuleName(order.getMaker())
+                + " to=" + order.getTargetPosition();
+    }
+
+    private static String diagJob(LogisticsItemOrder order) {
+        CraftingJob job = order.getJob();
+        if (job == null) {
+            return "job#-";
+        }
+        return "job#" + job.getId() + (job.getRequesterPosition() == null ? "" : "(req " + job.getRequesterPosition() + ")");
     }
 
     /**

@@ -160,13 +160,24 @@ public abstract class LogisticsOrderManager<T extends LogisticsOrder, I> impleme
      * hands out its results round-robin, and with hundreds of orders for the same ingredient every job ends up waiting
      * on its last few items for hours.
      */
-    @SuppressWarnings("unchecked")
     public void sendSuccessfull(int number, boolean defersend, IRoutedItem item) {
+        sendSuccessfull(number, defersend, item, null);
+    }
+
+    /**
+     * {@link #sendSuccessfull(int, boolean, IRoutedItem)}, with only the older orders {@code mayTakeCredit} accepts
+     * counted before the top order; null accepts all of them.
+     */
+    @SuppressWarnings("unchecked")
+    public void sendSuccessfull(int number, boolean defersend, IRoutedItem item, Predicate<T> mayTakeCredit) {
         T top = _orders.getFirst();
         int destination = top.getRouterId();
         int left = number;
         boolean tagged = false;
         for (T older : olderInterchangeable(top)) {
+            if (mayTakeCredit != null && !mayTakeCredit.test(older)) {
+                continue;
+            }
             if (left <= 0) {
                 break;
             }

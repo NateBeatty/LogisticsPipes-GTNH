@@ -69,6 +69,7 @@ public class Configs {
     public static boolean DEBUG_FLUID_ORDER = false;
     public static boolean DEBUG_CANCEL = false;
     public static boolean DEBUG_TRICKLE = false;
+    public static boolean DEBUG_RESULT_HANDOUT = false;
     public static boolean DEBUG_SMART_CRAFTER_RECIPE = false;
     public static boolean DEBUG_FLUID_BUFFER = false;
     public static boolean DEBUG_REQUESTS = false;
@@ -332,6 +333,13 @@ public class Configs {
                         "trickleSupplier",
                         Configs.DEBUG_TRICKLE,
                         "Log why a Trickle Supplier's request failed or is held back. [Trickle DIAG] in the log.")
+                .getBoolean(false);
+        Configs.DEBUG_RESULT_HANDOUT = Configs.CONFIGURATION
+                .get(
+                        Configs.CATEGORY_DEBUG,
+                        "resultHandout",
+                        Configs.DEBUG_RESULT_HANDOUT,
+                        "Log which order each Smart Crafter result is handed to (its job, the recipe that took the order, the recipe credited for the result, and the other open orders for that item), and about every 10 seconds why a Smart Crafter with open orders isn't releasing sets. [Handout DIAG] in the log.")
                 .getBoolean(false);
         Configs.DEBUG_SMART_CRAFTER_RECIPE = Configs.CONFIGURATION
                 .get(

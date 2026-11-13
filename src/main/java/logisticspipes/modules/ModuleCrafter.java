@@ -3,6 +3,7 @@ package logisticspipes.modules;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
@@ -11,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.DelayQueue;
+import java.util.function.Predicate;
 
 import net.minecraft.block.Block;
 import net.minecraft.client.entity.EntityPlayerSP;
@@ -1606,7 +1608,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 stacksleft -= 1;
                 itemsleft -= numtosend;
                 ItemStack stackToSend = extracted.splitStack(numtosend);
-                sendResult(nextOrder, route, tile, stackToSend, true);
+                sendResult(nextOrder, route, tile, stackToSend, true, null);
                 if (_service.getItemOrderManager().hasOrders(ResourceType.CRAFTING, ResourceType.EXTRA)) {
                     nextOrder = _service.getItemOrderManager()
                             .peekAtTopRequest(ResourceType.CRAFTING, ResourceType.EXTRA); // fetch but not remove.
@@ -1626,11 +1628,34 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
     }
 
     /**
-     * {@link #enabledUpdateEntity}'s result loop for {@link #servesOldestFirst}: each result goes to the oldest order
-     * that can take it right now. An order that can't (its destination is shut and no buffer has room) is passed over
-     * for this check but keeps its place, so it is first again as soon as it can take one. Nothing is moved while the
-     * machine has nothing ready. The orders served are the same as before - every crafting order in the chassis - only
-     * the order they are served in changed.
+     * For {@link #extractOldestFirst}: whether this request still has an ingredient for this module that hasn't been
+     * sent - a craft not finished, a delivery not made. Its sets can't have run yet, so a result made now came from
+     * another request's ingredients. False here: a normal crafter doesn't serve oldest first.
+     */
+    protected boolean jobOwesIngredients(CraftingJob job) {
+        return false;
+    }
+
+    /**
+     * The oldest order {@code accept} takes whose request has nothing left to send to this module, or the oldest it
+     * takes at all when there is none. Handing a result to an order whose own ingredients are still on their way gives
+     * it the result of another request's ingredients: the order counts as filled, its sub-crafts stay open, and the
+     * other request shows nothing left but the result it was robbed of.
+     */
+    private static LogisticsItemOrder oldestPreferringReady(LogisticsItemOrderManager orders,
+            Predicate<LogisticsItemOrder> accept, Predicate<LogisticsItemOrder> ready) {
+        LogisticsItemOrder order = orders
+                .oldestRequest(o -> accept.test(o) && ready.test(o), ResourceType.CRAFTING, ResourceType.EXTRA);
+        return order != null ? order : orders.oldestRequest(accept, ResourceType.CRAFTING, ResourceType.EXTRA);
+    }
+
+    /**
+     * {@link #enabledUpdateEntity}'s result loop for {@link #servesOldestFirst}: each result goes to the oldest order that can
+     * take it right now. An order that can't (its destination is shut and no buffer has room) is passed over for this
+     * check but keeps its place, so it is first again as soon as it can take one. Nothing is moved while the machine
+     * has nothing ready. The orders served are the same as before - every crafting order in the chassis - only the
+     * order they are served in changed. Once a result is out, requests whose ingredients for this module have all been
+     * sent come first (see {@link #oldestPreferringReady}), so it goes to the request whose ingredients made it.
      */
     private void extractOldestFirst(List<AdjacentTile> crafters, int itemsleft, int stacksleft) {
         LogisticsItemOrderManager orders = _service.getItemOrderManager();
@@ -1639,6 +1664,12 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
         Set<LogisticsItemOrder> held = new HashSet<>();
         Set<ItemIdentifier> notReady = new HashSet<>();
         List<RouteSeen> routes = new ArrayList<>();
+        // Per request, for this check: walking a request's orders is the costly part, and what this module's sends do
+        // here doesn't change what the other pipes still owe it. Only asked once a result is out of the machine: this
+        // loop runs every few ticks while the machine is still working, and then there is nothing to hand out.
+        Map<CraftingJob, Boolean> owes = new HashMap<>();
+        Predicate<LogisticsItemOrder> ready = o -> o.getJob() == null
+                || !owes.computeIfAbsent(o.getJob(), this::jobOwesIngredients);
         while (itemsleft > 0 && stacksleft > 0) {
             LogisticsItemOrder order = orders.oldestRequest(
                     o -> !held.contains(o) && !notReady.contains(o.getResource().getItem()),
@@ -1675,13 +1706,20 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             while (extracted.stackSize > 0) {
                 LogisticsItemOrder target = order;
                 ResultRoute targetRoute = route;
-                if (target.isFinished() || target.getAmount() <= 0 || !doesExtractionMatch(target, extractedID)) {
-                    // What came out isn't (or is no longer) for this order: the oldest order that takes it gets it.
-                    target = orders.oldestRequest(
-                            o -> !held.contains(o) && doesExtractionMatch(o, extractedID)
-                                    && routeFor(o, routes) != ResultRoute.HOLD,
-                            ResourceType.CRAFTING,
-                            ResourceType.EXTRA);
+                if (target.isFinished() || target.getAmount() <= 0
+                        || !doesExtractionMatch(target, extractedID)
+                        || !ready.test(target)) {
+                    // What came out isn't (or is no longer) for this order, or its request's own ingredients are still
+                    // on their way: the oldest order that takes it gets it, one whose ingredients were all sent first.
+                    // With no such order that is this one again. One that can't take any right now is passed over, or
+                    // a ready order with its gate full would send the stack out unaddressed in place of this one.
+                    target = oldestPreferringReady(orders, o -> {
+                        if (held.contains(o) || !doesExtractionMatch(o, extractedID)) {
+                            return false;
+                        }
+                        ResultRoute r = routeFor(o, routes);
+                        return r != ResultRoute.HOLD && (r != ResultRoute.TO_ORDER || gatedAllowance(o) > 0);
+                    }, ready);
                     targetRoute = target == null ? null : routeFor(target, routes);
                 }
                 int numtosend = Math.min(extracted.stackSize, extractedID.getMaxStackSize());
@@ -1700,18 +1738,40 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 itemsleft -= numtosend;
                 ItemStack stackToSend = extracted.splitStack(numtosend);
                 if (target == null) {
+                    handoutDiag(null, extractedID, numtosend, order, null, null, false); // TEMP [Handout DIAG]
                     sendUnrouted(tile, stackToSend, null);
                     continue;
                 }
                 // The send counts against the front order, so the chosen one is put there first. No rotation after
                 // it: which order is served next is decided by age, not by place in the queue.
                 orders.moveToFront(target);
-                sendResult(target, targetRoute, tile, stackToSend, false);
+                // The order manager counts a send against older orders to the same place first. When the target was
+                // chosen for being ready, an older one still waiting on its ingredients must not take it back.
+                boolean targetReady = ready.test(target);
+                Object diagBefore = handoutDiagSnapshot(extractedID); // TEMP [Handout DIAG]
+                sendResult(target, targetRoute, tile, stackToSend, false, targetReady ? ready : null);
+                // TEMP [Handout DIAG]
+                handoutDiag(diagBefore, extractedID, numtosend, order, target, targetRoute, targetReady);
                 // A send uses up gate allowance and buffer room, so the routes worked out so far may be stale.
                 routes.clear();
             }
         }
     }
+
+    /**
+     * TEMP [Handout DIAG]: what the orders for {@code item} still owed before a send, so {@link #handoutDiag} can show
+     * which ones the send was really counted against. Null when not logging; nothing is logged here.
+     */
+    protected Object handoutDiagSnapshot(ItemIdentifier item) {
+        return null;
+    }
+
+    /**
+     * TEMP [Handout DIAG]: one result handed out by {@link #extractOldestFirst}. {@code firstPick} is the order the
+     * loop extracted for, {@code target} the one it went to (null: sent out unaddressed). Nothing is logged here.
+     */
+    protected void handoutDiag(Object before, ItemIdentifier item, int amount, LogisticsItemOrder firstPick,
+            LogisticsItemOrder target, ResultRoute route, boolean targetReady) {}
 
     /** A route worked out during one check, for {@link #routeFor}. */
     private static final class RouteSeen {
@@ -1772,10 +1832,11 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
 
     /**
      * Sends one stack of results for the front order and counts it against that order. {@code mayDefer}: let the queue
-     * rotate past a destination that buffers or reported no room, as the normal loop always has.
+     * rotate past a destination that buffers or reported no room, as the normal loop always has. {@code mayTakeCredit}:
+     * which older orders to the same place the send may count against before this one, null for all of them.
      */
     private void sendResult(LogisticsItemOrder order, ResultRoute route, AdjacentTile tile, ItemStack stackToSend,
-            boolean mayDefer) {
+            boolean mayDefer, Predicate<LogisticsItemOrder> mayTakeCredit) {
         if (route == ResultRoute.TO_BUFFER) {
             // The destination isn't ready for it, so it waits in a buffer instead of being pushed at a
             // machine that can't use it yet. The order is still fulfilled: this module made what it owed.
@@ -1790,7 +1851,7 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
             } else {
                 sendUnrouted(tile, stackToSend, order.getInformation());
             }
-            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null, mayTakeCredit);
         } else if (order.getDestination() != null) {
             SinkReply reply = LogisticsManager.canSink(
                     order.getDestination().getRouter(),
@@ -1812,10 +1873,10 @@ public class ModuleCrafter extends LogisticsGuiModule implements ICraftItems, IH
                 // Counted as on its way, so the gate doesn't hand out the same room twice.
                 gate.onGatedSend(ItemIdentifier.get(stackToSend), stackToSend.stackSize, order.getInformation());
             }
-            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item);
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, defersend, item, mayTakeCredit);
         } else {
             sendUnrouted(tile, stackToSend, order.getInformation());
-            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null);
+            _service.getItemOrderManager().sendSuccessfull(stackToSend.stackSize, false, null, mayTakeCredit);
         }
     }
 
